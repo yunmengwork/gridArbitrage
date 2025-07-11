@@ -25,6 +25,9 @@ class Strategy(BaseStrategy):
         # 记录最新的市场数据
         self.bbo = {symbol: None for symbol in self.symbols}
 
+        # 时间参数
+        self.time_tolerance = 3  # 时间容忍度，单位为秒
+
         # 辅助变量
         self.short_span = 3 * 60 * 60 * 100
         self.long_span = 36 * 60 * 60 * 100
@@ -150,6 +153,14 @@ class Strategy(BaseStrategy):
             print("等待BBO数据...")
             return
 
+        # 如果数据时间戳异常，直接返回
+        if (
+            abs(self.bbo[self.spot]["timestamp"] - self.bbo[self.future]["timestamp"])
+            > self.time_tolerance * 1000
+        ):
+            print("BBO数据时间戳异常，跳过当前处理")
+            return
+
         # 计算买卖数据
         self.buy_price = (
             self.bbo[self.spot]["ask_price"] / self.bbo[self.future]["ask_price"]
@@ -188,6 +199,41 @@ class Strategy(BaseStrategy):
         grid_index = np.searchsorted(self.grid_levels, self.base_price)
 
         # 检查是否现在未成交的maker订单是否满足条件
+        for cid, order in self.orders.items():
+            grid_order = self.cid_to_grid_order.get(cid, None)
+            if grid_order:
+                if (
+                    grid_order["side"] == "buy"
+                    and grid_order["price"] >= self.buy_price
+                ):
+                    # 如果当前网格订单依旧满足条件，则不需要重新挂单
+                    # 检查订单是否为远期卖价一档
+                    if order["price"] == self.bbo[self.future]["ask_price"]:
+                        continue
+                    else:
+                        # 改单
+                        order["price"] = self.bbo[self.future]["ask_price"]
+                        self.trader.amend_order(0, order)
+                elif (
+                    grid_order["side"] == "sell"
+                    and grid_order["price"] <= self.sell_price
+                ):
+                    # 如果当前网格订单依旧满足条件，则不需要重新挂单
+                    # 检查订单是否为远期买价一档
+                    if order["price"] == self.bbo[self.future]["bid_price"]:
+                        continue
+                    else:
+                        # 改单
+                        order["price"] = self.bbo[self.future]["bid_price"]
+                        self.trader.amend_order(0, order)
+
+            # 如果当前网格订单不满足条件，则取消订单
+            self.trader.batch_cancel_order_by_id(0, client_order_ids=[cid])
+            # 重新挂网格
+            self.grid_orders.append(grid_order)
+            # 删除订单记录
+            del self.cid_to_grid_order[cid]
+            del self.orders[cid]
 
         # 检查是否需要执行交易
         if grid_index == self.last_grid_index:
@@ -197,25 +243,35 @@ class Strategy(BaseStrategy):
 
         elif grid_index > self.last_grid_index:
             # 当前网格索引大于上次，说明价格上涨, 需要执行卖出操作
-            for order in self.grid_orders:
-                if order["side"] == "sell" and order["price"] <= self.sell_price:
+            for grid_order in self.grid_orders:
+                if (
+                    grid_order["side"] == "sell"
+                    and grid_order["price"] <= self.sell_price
+                ):
                     # 执行卖出操作
                     self._exec_grid_order(
-                        price=order["price"],
-                        amount=order["amount"],
-                        side=order["side"],
+                        price=grid_order["price"],
+                        amount=grid_order["amount"],
+                        side=grid_order["side"],
                     )
+                    # 从网格订单中移除
+                    self.grid_orders.remove(grid_order)
 
         elif grid_index < self.last_grid_index:
             # 当前网格索引小于上次，说明价格下跌
-            for order in self.grid_orders:
-                if order["side"] == "buy" and order["price"] >= self.buy_price:
+            for grid_order in self.grid_orders:
+                if (
+                    grid_order["side"] == "buy"
+                    and grid_order["price"] >= self.buy_price
+                ):
                     # 执行买入操作
                     self._exec_grid_order(
-                        price=order["price"],
-                        amount=order["amount"],
-                        side=order["side"],
+                        price=grid_order["price"],
+                        amount=grid_order["amount"],
+                        side=grid_order["side"],
                     )
+                    # 从网格订单中移除
+                    self.grid_orders.remove(grid_order)
 
         # 更新上次网格索引
         self.last_grid_index = grid_index
@@ -328,8 +384,6 @@ class Strategy(BaseStrategy):
             # 网格订单成交，处理
             grid_order = self.cid_to_grid_order.get(order["cid"], None)
             if grid_order:
-                # 从网格订单中移除
-                self.grid_orders.remove(grid_order)
                 # 重新挂网格
                 new_grid_order = {}
                 side = "buy" if grid_order["side"] == "sell" else "sell"
@@ -341,6 +395,9 @@ class Strategy(BaseStrategy):
                 new_grid_order["amount"] = grid_order["amount"]
                 new_grid_order["side"] = side
                 self.grid_orders.append(new_grid_order)
+            # 删除order
+            del self.cid_to_grid_order[order["cid"]]
+            del self.orders[order["cid"]]
 
     def exec_hedge(self, symbol, side, amount):
         """执行对冲操作, 市价对冲

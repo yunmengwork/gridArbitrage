@@ -1,7 +1,7 @@
 
 
 
-# 交易pairs
+# 交易pairs, 这里现货方向与网格方向是一致的，远期方向与网格方向想法
 [pairs]
 spot = "ETH_USDT"
 future = "ETH_USDT_250926"
