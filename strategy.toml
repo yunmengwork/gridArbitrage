@@ -8,5 +8,5 @@ future = "ETH_USDT_250926"
 
 # 网格配置
 [grid_config]
-grid_interval = 0.0007  # 网格间隔
+grid_interval = 0.0005  # 网格间隔
 grid_num = 4    # 单边网格的数量

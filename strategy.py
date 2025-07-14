@@ -80,14 +80,14 @@ class Strategy(BaseStrategy):
 
     def subscribes(self):
         subs = [
-            # {
-            #     "account_id": 0,
-            #     "sub": {
-            #         "SubscribeWs": [
-            #             {"Bbo": self.symbols},  # 订阅最优买卖价
-            #         ]
-            #     },
-            # }
+            {
+                "account_id": 0,
+                "sub": {
+                    "SubscribeWs": [
+                        {"Bbo": self.symbols},  # 订阅最优买卖价
+                    ]
+                },
+            }
         ]
 
         return subs
@@ -290,6 +290,16 @@ class Strategy(BaseStrategy):
         #         level="INFO",
         #     )
         #     self._remove_pending_order(cid)
+        # # 更新total_trade_num
+        # if need_delete_pending_orders:
+        #     self.total_trade_num += len(need_delete_pending_orders)
+        #     self.trader.tlog(
+        #         tag="模拟成交",
+        #         msg=f"模拟成交订单数量: {len(need_delete_pending_orders)}, \
+        #         当前总交易次数: {self.total_trade_num}",
+        #         interval=2,
+        #         level="INFO",
+        #     )
 
         # ========================订单检查=========================
 
@@ -308,26 +318,55 @@ class Strategy(BaseStrategy):
                 # 如果当前网格订单依旧满足条件，则不需要重新挂单
                 # 检查订单是否为远期卖价一档
                 if order["price"] == self.bbo[self.future]["ask_price"]:
+                    # self.trader.tlog(
+                    #     tag="网格订单检查",
+                    #     msg=f"网格订单 {cid} 满足条件, 不需要修改订单",
+                    #     interval=2,
+                    #     level="INFO",
+                    # )
                     continue
                 else:
                     # 改单
+                    self.trader.tlog(
+                        tag="网格订单检查",
+                        msg=f"网格订单 {cid} 不满足条件，修改价格，原价格: {order['price']} -> 新价格: {self.bbo[self.future]['ask_price']}",
+                        interval=2,
+                        level="INFO",
+                    )
                     order["price"] = self.bbo[self.future]["ask_price"]
-                    self.trader.amend_order(0, order)
+                    # self.trader.amend_order(0, order)
             elif (
                 grid_order["side"] == "sell" and grid_order["price"] <= self.sell_price
             ):
                 # 如果当前网格订单依旧满足条件，则不需要重新挂单
                 # 检查订单是否为远期买价一档
                 if order["price"] == self.bbo[self.future]["bid_price"]:
+                    # self.trader.tlog(
+                    #     tag="网格订单检查",
+                    #     msg=f"网格订单 {cid} 满足条件, 不需要修改订单",
+                    #     interval=2,
+                    #     level="INFO",
+                    # )
                     continue
                 else:
                     # 改单
+                    self.trader.tlog(
+                        tag="网格订单检查",
+                        msg=f"网格订单 {cid} 不满足条件，修改价格，原价格: {order['price']} -> 新价格: {self.bbo[self.future]['ask_price']}",
+                        interval=2,
+                        level="INFO",
+                    )
                     order["price"] = self.bbo[self.future]["bid_price"]
-                    self.trader.amend_order(0, order)
+                    # self.trader.amend_order(0, order)
             else:
                 # 如果当前网格订单不满足条件，则取消订单
-                self.trader.batch_cancel_order_by_id(0, client_order_ids=[cid])
+                # self.trader.batch_cancel_order_by_id(0, client_order_ids=[cid])
                 # 重新挂网格
+                self.trader.log(
+                    msg=f"网格订单 {cid} 不满足条件，取消订单并重新挂单,\
+                        \n原网格订单: {grid_order}",
+                    level="INFO",
+                )
                 self.grid_orders.append(grid_order)
                 # 添加到需要删除的订单列表
                 need_delete_pending_orders.append(cid)
@@ -363,10 +402,22 @@ class Strategy(BaseStrategy):
                 - self.reorder_threshold * self.grid_interval
             ):
                 # 超出阈值，不挂单
+                self.trader.tlog(
+                    tag="网格调整",
+                    msg=f"基准价格 {self.base_price} 超出阈值，不重新挂单",
+                    interval=2,
+                    level="INFO",
+                )
                 pass
             else:
                 # 重新挂单
                 self._update_grid_orders()
+                self.trader.tlog(
+                    tag="网格调整",
+                    msg=f"重新挂单: {self.grid_orders}",
+                    interval=2,
+                    level="INFO",
+                )
 
         # ========================检查是否需要开仓=============================
 
@@ -384,16 +435,44 @@ class Strategy(BaseStrategy):
         for grid_order in self.grid_orders:
             if grid_order["side"] == "sell" and grid_order["price"] <= self.sell_price:
                 # 执行卖出操作
+                self.trader.tlog(
+                    tag="执行网格卖出",
+                    msg=f"执行网格卖出: {grid_order}",
+                    interval=2,
+                    level="INFO",
+                )
                 self._exec_grid_order(grid_order=grid_order)
 
             elif grid_order["side"] == "buy" and grid_order["price"] >= self.buy_price:
                 # 执行买入操作
+                self.trader.tlog(
+                    tag="执行网格买入",
+                    msg=f"执行网格买入: {grid_order}",
+                    interval=2,
+                    level="INFO",
+                )
                 self._exec_grid_order(grid_order=grid_order)
             else:
                 continue
 
-            # 从网格挂单中移除已执行的订单
+            # 从网格挂单中移除正在执行的订单
+            self.trader.tlog(
+                tag="移除正在执行的网格订单",
+                msg=f"移除正在执行的网格订单: {grid_order}",
+                interval=2,
+                level="INFO",
+            )
             self.grid_orders.remove(grid_order)
+
+            #
+            self.trader.tlog(
+                tag="pending order 和 grid order",
+                msg=f"当前挂单: {self.pending_orders}\
+                \n对应的网格挂单: {self.cid_to_grid_pending_order}\
+                \n现在的网格挂单: {self.grid_orders}",
+                interval=2,
+                level="INFO",
+            )
 
         # 更新上次网格索引
         self.last_grid_index = grid_index
