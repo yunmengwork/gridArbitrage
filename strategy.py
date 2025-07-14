@@ -131,13 +131,14 @@ class Strategy(BaseStrategy):
     def _update_grid_orders(self):
         """更新挂单列表, 确保挂单与网格级别一致"""
         self.grid_orders = []
-        for level in self.grid_levels:
+        for idx, level in enumerate(self.grid_levels):
             if level == self.base_price:
                 continue
             order = {
                 "price": level,
                 "amount": self.trade_amount,  # 假设每个网格的交易量为0.008
                 "side": "buy" if level < self.base_price else "sell",
+                "grid_index": idx,  # 网格索引
             }
             self.grid_orders.append(order)
 
@@ -233,6 +234,63 @@ class Strategy(BaseStrategy):
                 level="INFO",
             )
 
+        # ========================模拟交易=========================
+
+        # # 对于pending_orders中的订单
+        # # 如果现在最新的bbo的卖一价小于当前pending_order中的买单的报价，模拟成交
+        # # 如果现在最新的bbo的买一价大于当前pending_order中的卖单的报价，模拟成交
+        # need_delete_pending_orders = []  # 需要删除的订单列表
+        # for cid, order in self.pending_orders.items():
+        #     if order["symbol"] != self.future:
+        #         # 如果订单不是交割合约，则跳过
+        #         continue
+        #     if order["side"].lower() == "buy":
+        #         if self.bbo[self.future]["ask_price"] <= order["price"]:
+        #             # 模拟成交
+        #             self.trader.log(
+        #                 f"模拟成交: cid {cid}, {order}",
+        #                 level="INFO",
+        #             )
+        #             need_delete_pending_orders.append(cid)
+        #     elif order["side"].lower() == "sell":
+        #         if self.bbo[self.future]["bid_price"] >= order["price"]:
+        #             # 模拟成交
+        #             self.trader.log(
+        #                 f"模拟成交: cid {cid}, {order}",
+        #                 level="INFO",
+        #             )
+        #             need_delete_pending_orders.append(cid)
+        # # 删除已模拟成交的订单
+        # for cid in need_delete_pending_orders:
+        #     # 添加对应的网格挂单到网格挂单列表
+        #     grid_order = self.cid_to_grid_pending_order.get(cid, None)
+        #     if grid_order is not None:
+        #         on_upper = grid_order["side"] == "buy"
+        #         new_grid_order = {
+        #             "price": (
+        #                 grid_order["price"] + self.grid_interval
+        #                 if on_upper
+        #                 else grid_order["price"] - self.grid_interval
+        #             ),
+        #             "amount": grid_order["amount"],
+        #             "side": "sell" if on_upper else "buy",
+        #             "grid_index": (
+        #                 grid_order["grid_index"] + 1
+        #                 if on_upper
+        #                 else grid_order["grid_index"] - 1
+        #             ),
+        #         }
+        #         self.grid_orders.append(new_grid_order)
+        #         self.trader.log(
+        #             f"添加成交网格订单的对应网格挂单: {new_grid_order}",
+        #             level="INFO",
+        #         )
+        #     self.trader.log(
+        #         f"删除已模拟成交的订单: cid {cid}",
+        #         level="INFO",
+        #     )
+        #     self._remove_pending_order(cid)
+
         # ========================订单检查=========================
 
         need_delete_pending_orders = []  # 需要删除的订单列表
@@ -326,19 +384,11 @@ class Strategy(BaseStrategy):
         for grid_order in self.grid_orders:
             if grid_order["side"] == "sell" and grid_order["price"] <= self.sell_price:
                 # 执行卖出操作
-                self._exec_grid_order(
-                    price=grid_order["price"],
-                    amount=grid_order["amount"],
-                    side=grid_order["side"],
-                )
+                self._exec_grid_order(grid_order=grid_order)
 
             elif grid_order["side"] == "buy" and grid_order["price"] >= self.buy_price:
                 # 执行买入操作
-                self._exec_grid_order(
-                    price=grid_order["price"],
-                    amount=grid_order["amount"],
-                    side=grid_order["side"],
-                )
+                self._exec_grid_order(grid_order=grid_order)
             else:
                 continue
 
@@ -348,23 +398,26 @@ class Strategy(BaseStrategy):
         # 更新上次网格索引
         self.last_grid_index = grid_index
 
-    def _exec_grid_order(self, price, amount, side):
+    def _exec_grid_order(self, grid_order):
         """执行网格订单
-        price: float - 网格订单价格
-        amount: float - 网格订单数量
-        side: str - 网格订单方向，'buy' 或 'sell'
+        grid_order: dict - 网格订单信息
         """
+        # 注意这里拿到的价格是网格的价格，而不是挂单的价格
         # 执行交易逻辑
         # 交割合约挂单
         # 交割合约挂单方向与网格方向相反
-        actual_side = "buy" if side == "sell" else "sell"
+        grid_price = grid_order["price"]
+        grid_amount = grid_order["amount"]
+        grid_side = grid_order["side"]
+        grid_index = grid_order["grid_index"]
+        actual_side = "buy" if grid_side == "sell" else "sell"
         cid = self.trader.create_cid(self.cex_configs[0]["exchange"])
         order = {
             "cid": cid,
             "symbol": self.future,
             "order_type": "Limit",
             "side": actual_side.capitalize(),
-            "amount": amount,
+            "amount": grid_amount,
             "price": (
                 self.bbo[self.future]["bid_price"]
                 if actual_side == "Buy"
@@ -375,9 +428,10 @@ class Strategy(BaseStrategy):
         order_result = self.trader.place_order(0, order)
         # 记录订单信息
         self.cid_to_grid_pending_order[cid] = {
-            "price": price,
-            "amount": amount,
-            "side": side,
+            "price": grid_price,
+            "amount": grid_amount,
+            "side": grid_side,
+            "grid_index": grid_index,
         }
         self.pending_orders[cid] = order
 
