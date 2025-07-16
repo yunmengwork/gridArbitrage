@@ -92,7 +92,7 @@ class Strategy(BaseStrategy):
                 level="WARN",
             )
             while getattr(self, lock_name):
-                time.sleep(0.01)
+                time.sleep(0.001)
                 if time.time() - start_time > timeout:
                     self.trader.log(f"锁 {lock_name} 超时释放!", level="ERROR")
                     setattr(self, lock_name, False)  # 强制释放
@@ -301,7 +301,7 @@ class Strategy(BaseStrategy):
 
         need_delete_pending_orders = []  # 需要删除的订单列表
         # 检查是否现在未成交的maker订单是否满足条件
-        for cid, order in self.pending_orders.copy().items():
+        for cid, order in self.pending_orders.items():
             grid_order = self.cid_to_grid_pending_order.get(cid, None)
             if grid_order is None:
                 self.trader.log(
@@ -311,68 +311,28 @@ class Strategy(BaseStrategy):
                 continue
 
             if grid_order["side"] == "buy" and grid_order["price"] >= buy_price:
-                maker_price = bbo_copy[self.future]["ask_price"]
-                taker_price = bbo_copy[self.spot]["ask_price"]
-                grid_order["maker_price"] = maker_price
-                grid_order["taker_price"] = taker_price
+                grid_order["maker_price"] = bbo_copy[self.future]["ask_price"]
+                grid_order["taker_price"] = bbo_copy[self.spot]["ask_price"]
                 # 如果当前网格订单依旧满足条件，则不需要重新挂单
                 # 检查订单是否为远期卖价一档
                 if order["price"] == bbo_copy[self.future]["ask_price"]:
-                    # self.trader.tlog(
-                    #     tag="网格订单检查",
-                    #     msg=f"网格订单 {cid} 满足条件, 不需要修改订单",
-                    #     interval=2,
-                    #     level="INFO",
-                    # )
                     continue
                 else:
                     # 改单
-                    self.trader.tlog(
-                        tag="网格订单检查",
-                        msg=f"网格订单 {cid} 不满足条件，修改价格，原价格: {order['price']} -> 新价格: {bbo_copy[self.future]['ask_price']} \
-                            \ngrid_order: {json.dumps(grid_order, indent=2)}",
-                        level="INFO",
-                    )
                     order["price"] = bbo_copy[self.future]["ask_price"]
                     res = self.trader.amend_order(1, order, sync=self.sync)
-                    self.trader.log(
-                        f"修改订单结果: {json.dumps(res, indent=2)}",
-                        level="INFO",
-                    )
             elif grid_order["side"] == "sell" and grid_order["price"] <= sell_price:
-                maker_price = bbo_copy[self.future]["bid_price"]
-                taker_price = bbo_copy[self.spot]["bid_price"]
-                grid_order["maker_price"] = maker_price
-                grid_order["taker_price"] = taker_price
+                grid_order["maker_price"] = bbo_copy[self.future]["bid_price"]
+                grid_order["taker_price"] = bbo_copy[self.spot]["bid_price"]
                 # 如果当前网格订单依旧满足条件，则不需要重新挂单
                 # 检查订单是否为远期买价一档
                 if order["price"] == bbo_copy[self.future]["bid_price"]:
-                    # self.trader.tlog(
-                    #     tag="网格订单检查",
-                    #     msg=f"网格订单 {cid} 满足条件, 不需要修改订单",
-                    #     interval=2,
-                    #     level="INFO",
-                    # )
                     continue
                 else:
                     # 改单
-                    self.trader.tlog(
-                        tag="网格订单检查",
-                        msg=f"网格订单 {cid} 不满足条件，修改价格，原价格: {order['price']} -> 新价格: {bbo_copy[self.future]['bid_price']}\
-                            \ngrid_order: {json.dumps(grid_order, indent=2)}",
-                        level="INFO",
-                    )
+                    order["price"] = bbo_copy[self.future]["bid_price"]
                     res = self.trader.amend_order(1, order, sync=self.sync)
-                    self.trader.log(
-                        f"修改订单结果: {json.dumps(res, indent=2)}",
-                        level="INFO",
-                    )
             else:
-                # 如果当前网格订单不满足条件，则取消订单
-                self.trader.log(
-                    f"网格订单 {cid} 不满足条件，取消订单: {json.dumps(order, indent=2)}",
-                    level="INFO",
-                )
                 # 取消订单
                 res = self.trader.batch_cancel_order_by_id(
                     1,
@@ -380,20 +340,6 @@ class Strategy(BaseStrategy):
                     symbol=self.placeFutureSymbol,
                     sync=self.sync,
                 )
-                self.trader.log(
-                    f"取消订单结果: {json.dumps(res, indent=2)}",
-                    level="INFO",
-                )
-                # 重新挂网格
-                self.trader.log(
-                    msg=f"网格订单 {cid} 不满足条件，取消订单并重新挂单,\
-                        \n原网格订单: {grid_order}",
-                    level="INFO",
-                )
-                # self.wait_lock_release("grid_orders_lock")
-                # self.grid_orders_lock = True  # 设置锁，防止多线程冲突
-                # self.grid_orders.append(grid_order)
-                # self.grid_orders_lock = False  # 释放锁
                 # 添加到需要删除的订单列表
                 need_delete_pending_orders.append(cid)
 
@@ -401,8 +347,10 @@ class Strategy(BaseStrategy):
         for cid in need_delete_pending_orders:
             if cid in self.pending_orders:
                 del self.pending_orders[cid]
-            # if cid in self.cid_to_grid_pending_order:
-            #     del self.cid_to_grid_pending_order[cid]
+            # 按理来说取消挂单就需要将网格挂单重新挂单，也就是添加回网格挂单列表
+            # 但是我们希望在收到订单回执时知道某一订单对应的是哪个网格挂单
+            # 所以这里不需要将网格挂单重新添加到网格挂单列表，重新挂单的操作在接受到订单取消时执行
+            # 所以这里只删除self.pending_orders，取消的订单不需要再做订单检查
 
         self.pending_orders_lock = False  # 释放锁
 
@@ -472,74 +420,32 @@ class Strategy(BaseStrategy):
         for grid_order in self.grid_orders:
             if (
                 grid_order["side"] == "sell"
-                and grid_order["price"] + 0.00005 <= sell_price
+                and grid_order["price"] + 0.00005
+                <= sell_price  # 这里的+0.00005调整是因为希望开仓条件苛刻一点，以免频繁的挂单又撤单，下面同理
             ):
-                maker_price = bbo_copy[self.future]["bid_price"]
-                taker_price = bbo_copy[self.spot]["bid_price"]
-                grid_order["maker_price"] = maker_price
-                grid_order["taker_price"] = taker_price
+                grid_order["maker_price"] = bbo_copy[self.future]["bid_price"]
+                grid_order["taker_price"] = bbo_copy[self.spot]["bid_price"]
                 # 执行卖出操作
-                self.trader.tlog(
-                    tag="执行网格卖出",
-                    msg=f"sell_price: {sell_price}, 执行网格卖出: {grid_order}",
-                    interval=2,
-                    level="INFO",
-                )
                 placeSuccess = self._exec_grid_order(grid_order=grid_order)
                 if not placeSuccess:
-                    self.trader.tlog(
-                        tag="网格卖出失败",
-                        msg=f"网格卖出失败: {grid_order}",
-                        interval=2,
-                        level="ERROR",
-                    )
                     continue
 
             elif (
                 grid_order["side"] == "buy"
                 and grid_order["price"] - 0.00005 >= buy_price
             ):
-                maker_price = bbo_copy[self.future]["ask_price"]
-                taker_price = bbo_copy[self.spot]["ask_price"]
-                grid_order["maker_price"] = maker_price
-                grid_order["taker_price"] = taker_price
+                grid_order["maker_price"] = bbo_copy[self.future]["ask_price"]
+                grid_order["taker_price"] = bbo_copy[self.spot]["ask_price"]
                 # 执行买入操作
-                self.trader.tlog(
-                    tag="执行网格买入",
-                    msg=f"buy_price: {buy_price},执行网格买入: {grid_order}",
-                    interval=2,
-                    level="INFO",
-                )
                 placeSuccess = self._exec_grid_order(grid_order=grid_order)
                 if not placeSuccess:
-                    self.trader.tlog(
-                        tag="网格买入失败",
-                        msg=f"网格买入失败: {grid_order}",
-                        interval=2,
-                        level="ERROR",
-                    )
                     continue
             else:
                 continue
 
             # 从网格挂单中移除正在执行的订单
-            self.trader.tlog(
-                tag="移除正在执行的网格订单",
-                msg=f"移除正在执行的网格订单: {grid_order}",
-                interval=2,
-                level="INFO",
-            )
             self.grid_orders.remove(grid_order)
 
-            #
-            self.trader.tlog(
-                tag="pending order 和 grid order",
-                msg=f"当前挂单: {self.pending_orders}\
-                \n对应的网格挂单: {self.cid_to_grid_pending_order}\
-                \n现在的网格挂单: {self.grid_orders}",
-                interval=2,
-                level="INFO",
-            )
         self.grid_orders_lock = False  # 释放锁
 
         # 更新上次网格索引
@@ -566,23 +472,13 @@ class Strategy(BaseStrategy):
             "time_in_force": "PostOnly",  # 持续有效
         }
         # 执行挂单
-        self.trader.log(
-            f"挂单信息订单: {json.dumps(order, indent=2)}",
-            level="INFO",
-        )
-        submit_time = int(time.time() * 1000)  # 添加发送时间戳
         place_order_result = self.trader.place_order(1, order)
-        order["submit_time"] = submit_time  # 添加发送时间戳到订单信息
         if "Err" in place_order_result:
             self.trader.log(
                 f"挂单失败: {place_order_result['Err']}",
                 level="ERROR",
             )
             return False
-        self.trader.log(
-            f"挂单结果: {json.dumps(place_order_result, indent=2)}",
-            level="INFO",
-        )
         # 记录订单信息
         self.cid_to_grid_pending_order[cid] = grid_order
         self.wait_lock_release("pending_orders_lock", "添加挂单到pending_orders")
@@ -628,18 +524,6 @@ class Strategy(BaseStrategy):
         """
         # 先对symbol进行处理
         order["symbol"] = self.__process_symbol(order["symbol"])
-
-        if order["status"].lower() == "open":
-            time_cost = None
-            local_order = self.pending_orders.get(order["cid"], None)
-            if local_order:
-                if "submit_time" in local_order:
-                    time_cost = order["timestamp"] - local_order["submit_time"]
-            self.trader.log(
-                f"接收到订单数据: {json.dumps(order, indent=2)}\
-                    \n-> 挂单时间: {time_cost} ms",
-                level="INFO",
-            )
 
         if order["symbol"] == self.future and order["status"].lower() == "canceled":
             # 交割合约订单被取消
@@ -710,16 +594,19 @@ class Strategy(BaseStrategy):
         side: str - 方向，'buy' 或 'sell'
         amount: float - 数量
         """
+        place_price = (
+            np.round(
+                (self.bbo[symbol]["bid_price"] * (1 - 0.002)), 2
+            )  # 这里使用限价加上0.2%的滑点忍受，2是因为ETH的交割与永续的最小报价单位是0.01
+            if side.lower() == "sell"
+            else np.round((self.bbo[symbol]["ask_price"] * (1 + 0.002)), 2)
+        )
         order = {
             "symbol": symbol,
-            "order_type": "Market",
+            "order_type": "Limit",  # 市价对冲使用限价单
             "side": side.capitalize(),
             "amount": amount,
-            "price": (
-                self.bbo[symbol]["bid_price"]
-                if side.lower() == "sell"
-                else self.bbo[symbol]["ask_price"]
-            ),
+            "price": place_price,
             "time_in_force": "GTC",  # 即时成交剩余撤销
         }
         # 执行对冲操作
@@ -727,8 +614,7 @@ class Strategy(BaseStrategy):
             f"执行市价对冲操作: {json.dumps(order, indent=2)}",
             level="INFO",
         )
-        order_result = self.trader.place_order(0, order)
-        print(f"对冲订单执行结果: {order_result}")
+        order_result = self.trader.place_order(0, order, sync=self.sync)
 
     def on_position(self, exchange, position):
         """处理持仓数据
