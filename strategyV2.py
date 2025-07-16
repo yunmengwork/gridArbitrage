@@ -295,7 +295,7 @@ class Strategy(BaseStrategy):
             )
 
         # ========================订单检查=========================
-        
+
         # 这里不使用锁是因为可以接受同时有多个线程在执行订单检查
         # 检查是否现在未成交的maker订单是否满足条件
         pending_orders_copy = self.pending_orders.copy()
@@ -553,6 +553,14 @@ class Strategy(BaseStrategy):
         # 先对symbol进行处理
         order["symbol"] = self.__process_symbol(order["symbol"])
 
+        # 对冲单成交
+        if order["symbol"] == self.spot and order["status"].lower() == "filled":
+            self.trader.log(
+                f"对冲订单成交: {json.dumps(order, indent=2)}",
+                level="INFO",
+            )
+
+        # 交割合约被取消
         if order["symbol"] == self.future and order["status"].lower() == "canceled":
             # 交割合约订单被取消
             self.trader.log(
