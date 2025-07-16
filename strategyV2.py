@@ -319,8 +319,15 @@ class Strategy(BaseStrategy):
                     continue
                 else:
                     # 改单
+                    last_price = order["price"]
                     order["price"] = bbo_copy[self.future]["ask_price"]
                     res = self.trader.amend_order(1, order, sync=self.sync)
+                    self.trader.tlog(
+                        tag="改单",
+                        msg=f"订单 {cid}, 方向 {grid_order['side']} 原价 {last_price} -> 新价 {order['price']}",
+                        level="INFO",
+                        interval=1,
+                    )
             elif grid_order["side"] == "sell" and grid_order["price"] <= sell_price:
                 grid_order["maker_price"] = bbo_copy[self.future]["bid_price"]
                 grid_order["taker_price"] = bbo_copy[self.spot]["bid_price"]
@@ -330,8 +337,15 @@ class Strategy(BaseStrategy):
                     continue
                 else:
                     # 改单
+                    last_price = order["price"]
                     order["price"] = bbo_copy[self.future]["bid_price"]
                     res = self.trader.amend_order(1, order, sync=self.sync)
+                    self.trader.tlog(
+                        tag="改单",
+                        msg=f"订单 {cid}, 方向 {grid_order['side']} 原价 {last_price} -> 新价 {order['price']}",
+                        level="INFO",
+                        interval=1,
+                    )
             else:
                 # 取消订单
                 res = self.trader.batch_cancel_order_by_id(
@@ -339,6 +353,12 @@ class Strategy(BaseStrategy):
                     client_order_ids=[cid],
                     symbol=self.placeFutureSymbol,
                     sync=self.sync,
+                )
+                self.trader.tlog(
+                    tag="取消订单",
+                    msg=f"订单 {cid} 不满足条件，取消订单",
+                    level="INFO",
+                    interval=1,
                 )
                 # 添加到需要删除的订单列表
                 need_delete_pending_orders.append(cid)
@@ -429,6 +449,11 @@ class Strategy(BaseStrategy):
                 placeSuccess = self._exec_grid_order(grid_order=grid_order)
                 if not placeSuccess:
                     continue
+                self.trader.log(
+                    f"buy_price: {buy_price}, sell_price: {sell_price}\
+                        \n执行卖出操作: {json.dumps(grid_order, indent=2)}",
+                    level="INFO",
+                )
 
             elif (
                 grid_order["side"] == "buy"
@@ -440,6 +465,11 @@ class Strategy(BaseStrategy):
                 placeSuccess = self._exec_grid_order(grid_order=grid_order)
                 if not placeSuccess:
                     continue
+                self.trader.log(
+                    f"buy_price: {buy_price}, sell_price: {sell_price}\
+                        \n执行买入操作: {json.dumps(grid_order, indent=2)}",
+                    level="INFO",
+                )
             else:
                 continue
 
@@ -578,7 +608,7 @@ class Strategy(BaseStrategy):
                     else grid_order["grid_index"] - 1
                 )
                 self.trader.log(
-                    f"网格订单成交，重新挂单: {json.dumps(new_grid_order, indent=2)}",
+                    f"网格订单成交，挂对应的网格单: {json.dumps(new_grid_order, indent=2)}",
                     level="INFO",
                 )
                 self.wait_lock_release("grid_orders_lock")
