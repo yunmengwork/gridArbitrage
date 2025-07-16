@@ -53,7 +53,7 @@ class Strategy(BaseStrategy):
         self.grid_levels = None
         self.last_grid_index = None
         # 网格挂单
-        self.grid_orders = []  # 挂单列表
+        self.grid_orders = {}  # 挂单列表，<grid_index, grid_order>
         self.reorder_threshold = (
             0.5  # 网格重新挂单的阈值, 需要更新网格是base_price在网格中部50%以内
         )
@@ -183,7 +183,7 @@ class Strategy(BaseStrategy):
         """更新挂单列表, 确保挂单与网格级别一致"""
         self.wait_lock_release("grid_orders_lock", "更新网格挂单列表")
         self.grid_orders_lock = True  # 设置锁，防止多线程冲突
-        self.grid_orders = []
+        self.grid_orders = {}
         for idx, level in enumerate(self.grid_levels):
             if level == self.base_price:
                 continue
@@ -193,7 +193,7 @@ class Strategy(BaseStrategy):
                 "side": "buy" if level < self.base_price else "sell",
                 "grid_index": idx,  # 网格索引
             }
-            self.grid_orders.append(order)
+            self.grid_orders[idx] = order  # 使用网格索引作为键
         self.grid_orders_lock = False  # 释放锁
 
     def _remove_pending_order(self, cid):
@@ -295,13 +295,11 @@ class Strategy(BaseStrategy):
             )
 
         # ========================订单检查=========================
-
-        self.wait_lock_release("pending_orders_lock", "检查未成交挂单")
-        self.pending_orders_lock = True  # 设置锁，防止多线程冲突
-
-        need_delete_pending_orders = []  # 需要删除的订单列表
+        
+        # 这里不使用锁是因为可以接受同时有多个线程在执行订单检查
         # 检查是否现在未成交的maker订单是否满足条件
-        for cid, order in self.pending_orders.items():
+        pending_orders_copy = self.pending_orders.copy()
+        for cid, order in pending_orders_copy.items():
             grid_order = self.cid_to_grid_pending_order.get(cid, None)
             if grid_order is None:
                 self.trader.log(
@@ -360,13 +358,12 @@ class Strategy(BaseStrategy):
                     level="INFO",
                     interval=1,
                 )
-                # 添加到需要删除的订单列表
-                need_delete_pending_orders.append(cid)
+                self.wait_lock_release("pending_orders_lock", "检查未成交挂单")
+                self.pending_orders_lock = True  # 设置锁，防止多线程冲突
+                if cid in self.pending_orders:
+                    del self.pending_orders[cid]
+                self.pending_orders_lock = False  # 释放锁
 
-        # 由于remove函数里已经有了锁，所以这里不能使用该函数，否则会导致死锁
-        for cid in need_delete_pending_orders:
-            if cid in self.pending_orders:
-                del self.pending_orders[cid]
             # 按理来说取消挂单就需要将网格挂单重新挂单，也就是添加回网格挂单列表
             # 但是我们希望在收到订单回执时知道某一订单对应的是哪个网格挂单
             # 所以这里不需要将网格挂单重新添加到网格挂单列表，重新挂单的操作在接受到订单取消时执行
@@ -396,7 +393,7 @@ class Strategy(BaseStrategy):
             self._update_grid_levels(self.base_price)
 
             # 清空当前网格挂单
-            self.grid_orders = []
+            self.grid_orders = {}
             # 检查是否需要重新挂单
             if (
                 self.base_price
@@ -435,9 +432,11 @@ class Strategy(BaseStrategy):
             self.last_grid_index = grid_index
             return
 
+        # 同一时刻只能有一个线程在执行网格挂单操作
         self.wait_lock_release("grid_orders_lock")
         self.grid_orders_lock = True  # 设置锁，防止多线程冲突
-        for grid_order in self.grid_orders:
+        grid_orders_copy = self.grid_orders.copy()
+        for grid_index, grid_order in grid_orders_copy.items():
             if (
                 grid_order["side"] == "sell"
                 and grid_order["price"] + 0.00005
@@ -474,8 +473,7 @@ class Strategy(BaseStrategy):
                 continue
 
             # 从网格挂单中移除正在执行的订单
-            self.grid_orders.remove(grid_order)
-
+            self.grid_orders.pop(grid_index, None)
         self.grid_orders_lock = False  # 释放锁
 
         # 更新上次网格索引
@@ -574,7 +572,7 @@ class Strategy(BaseStrategy):
                 )
                 self.wait_lock_release("grid_orders_lock")
                 self.grid_orders_lock = True  # 设置锁，防止多线程冲突
-                self.grid_orders.append(grid_order)
+                self.grid_orders[grid_order["grid_index"]] = grid_order
                 self.grid_orders_lock = False  # 释放锁
             # 删除order
             self._remove_pending_order(order["cid"])
@@ -613,7 +611,7 @@ class Strategy(BaseStrategy):
                 )
                 self.wait_lock_release("grid_orders_lock")
                 self.grid_orders_lock = True  # 设置锁，防止多线程冲突
-                self.grid_orders.append(new_grid_order)
+                self.grid_orders[new_grid_order["grid_index"]] = new_grid_order
                 self.grid_orders_lock = False
             # 删除order
             self._remove_pending_order(order["cid"])
