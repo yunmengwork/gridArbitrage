@@ -362,6 +362,7 @@ class Strategy(BaseStrategy):
                             \ngrid_order: {json.dumps(grid_order, indent=2)}",
                         level="INFO",
                     )
+                    order["price"] = bbo_copy[self.future]["bid_price"]
                     res = self.trader.amend_order(1, order, sync=self.sync)
                     self.trader.log(
                         f"修改订单结果: {json.dumps(res, indent=2)}",
