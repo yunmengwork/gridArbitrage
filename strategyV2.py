@@ -82,6 +82,11 @@ class Strategy(BaseStrategy):
         # Lock
         self.pending_orders_lock = False  # 锁，防止多线程冲突
         self.grid_orders_lock = False  # 锁，防止多线程冲突
+        self.continuous_open_signal_lock = False  # 锁，防止多线程冲突
+
+        # 持续开仓信号，表明是稳定区间而不是大波动
+        self.continuous_open_signal_min_num = 100  # 连续开仓信号最小数量
+        self.continuous_open_signal = {}  # <grid_index, count>
 
     def wait_lock_release(self, lock_name, msg=None, timeout=5):
         """等待锁释放"""
@@ -171,6 +176,15 @@ class Strategy(BaseStrategy):
             self.long_ewm = (
                 (self.long_span - 1) * self.long_ewm + price
             ) / self.long_span
+
+    def _reset_continuous_open_signal(self):
+        """重置连续开仓信号"""
+        self.wait_lock_release("continuous_open_signal_lock", "重置连续开仓信号")
+        self.continuous_open_signal_lock = True  # 设置锁，防止多线程
+        self.continuous_open_signal = {}
+        for i in range(2 * self.grid_num + 1):
+            self.continuous_open_signal[i] = 0
+        self.continuous_open_signal_lock = False
 
     def _update_grid_levels(self, base_price):
         """更新网格级别"""
@@ -289,6 +303,7 @@ class Strategy(BaseStrategy):
             self.base_price = middle_price
             self._update_grid_levels(self.base_price)
             self._update_grid_orders()
+            self._reset_continuous_open_signal()  # 重置连续开仓信号
             self.trader.log(
                 f"初始化网格级别: {self.grid_levels}, 网格挂单: {self.grid_orders}",
                 level="INFO",
@@ -392,6 +407,9 @@ class Strategy(BaseStrategy):
             self.base_price = self.long_ewm
             self._update_grid_levels(self.base_price)
 
+            # 重置连续开仓信号
+            self._reset_continuous_open_signal()
+
             # 清空当前网格挂单
             self.grid_orders = {}
             # 检查是否需要重新挂单
@@ -432,16 +450,25 @@ class Strategy(BaseStrategy):
             self.last_grid_index = grid_index
             return
 
-        # 同一时刻只能有一个线程在执行网格挂单操作
+        # 同一时刻只能有一个线程在执行网格挂单操作以及连续开仓信号的处理
         self.wait_lock_release("grid_orders_lock")
         self.grid_orders_lock = True  # 设置锁，防止多线程冲突
+
+        self.wait_lock_release("continuous_open_signal_lock", "处理连续开仓信号")
+        self.continuous_open_signal_lock = True  # 设置锁，防止多线程冲突
+
         grid_orders_copy = self.grid_orders.copy()
         for grid_index, grid_order in grid_orders_copy.items():
+            continuous_open_signal_count = self.continuous_open_signal[grid_index]
             if (
                 grid_order["side"] == "sell"
                 and grid_order["price"] + 0.00005
                 <= sell_price  # 这里的+0.00005调整是因为希望开仓条件苛刻一点，以免频繁的挂单又撤单，下面同理
             ):
+                if continuous_open_signal_count < self.continuous_open_signal_min_num:
+                    # 如果连续开仓信号小于最小数量，不执行交易
+                    self.continuous_open_signal[grid_index] += 1
+                    continue
                 grid_order["maker_price"] = bbo_copy[self.future]["bid_price"]
                 grid_order["taker_price"] = bbo_copy[self.spot]["bid_price"]
                 # 执行卖出操作
@@ -453,11 +480,17 @@ class Strategy(BaseStrategy):
                         \n执行卖出操作: {json.dumps(grid_order, indent=2)}",
                     level="INFO",
                 )
+                # 交易执行成功，需要重置连续开仓信号
+                self.continuous_open_signal[grid_index] = 0
 
             elif (
                 grid_order["side"] == "buy"
                 and grid_order["price"] - 0.00005 >= buy_price
             ):
+                if continuous_open_signal_count < self.continuous_open_signal_min_num:
+                    # 如果连续开仓信号小于最小数量，不执行交易
+                    self.continuous_open_signal[grid_index] += 1
+                    continue
                 grid_order["maker_price"] = bbo_copy[self.future]["ask_price"]
                 grid_order["taker_price"] = bbo_copy[self.spot]["ask_price"]
                 # 执行买入操作
@@ -469,11 +502,16 @@ class Strategy(BaseStrategy):
                         \n执行买入操作: {json.dumps(grid_order, indent=2)}",
                     level="INFO",
                 )
+                # 交易执行成功，需要重置连续开仓信号
+                self.continuous_open_signal[grid_index] = 0
             else:
+                self.continuous_open_signal[grid_index] = 0  # 重置连续开仓信号
                 continue
 
             # 从网格挂单中移除正在执行的订单
             self.grid_orders.pop(grid_index, None)
+
+        self.continuous_open_signal_lock = False  # 释放锁
         self.grid_orders_lock = False  # 释放锁
 
         # 更新上次网格索引
