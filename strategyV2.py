@@ -140,7 +140,7 @@ class Strategy(BaseStrategy):
         self.continuous_open_signal_lock = False  # 锁，防止多线程冲突
 
         # 持续开仓信号，表明是稳定区间而不是大波动
-        self.continuous_open_signal_min_num = 100  # 连续开仓信号最小数量
+        self.continuous_open_signal_min_num = 30  # 连续开仓信号最小数量
         self.continuous_open_signal = {}  # <grid_index, count>
 
         # 对延迟进行统计，下单，撤单，取消订单延迟
@@ -782,7 +782,9 @@ class Strategy(BaseStrategy):
             if side.lower() == "sell"
             else np.round((self.bbo[symbol]["ask_price"] * (1 + 0.002)), 2)
         )
+        cid = self.trader.create_cid(self.cex_configs[0]["exchange"])
         order = {
+            "cid": cid,
             "symbol": symbol,
             "order_type": "Limit",  # 市价对冲使用限价单
             "side": side.capitalize(),
