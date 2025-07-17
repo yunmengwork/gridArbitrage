@@ -1131,7 +1131,15 @@ class Strategy(BaseStrategy):
             f"执行市价对冲操作: {json.dumps(order, indent=2)}",
             level="INFO",
         )
-        order_result = self.trader.place_order(0, order, sync=self.sync)
+        # 对冲使用同步，如果是异步可能会导致对冲订单未完成就开始下一步操作
+        order_result = self.trader.place_order(0, order)
+        while "Ok" not in order_result:
+            self.trader.log(
+                f"对冲订单下单失败: {order_result}, 重试中...",
+                level="ERROR",
+            )
+            time.sleep(0.01)  # 等待0.01秒后重试
+            order_result = self.trader.place_order(0, order)
 
     def on_position(self, exchange, position):
         """处理持仓数据
