@@ -517,33 +517,46 @@ class Strategy(BaseStrategy):
 
     def _market_close_all(self):
         """平掉所有仓位"""
-        for symbol in self.symbols:
-            # 平掉所有仓位
-            position = self.positions.get(symbol, None)
-            if position:
-                # 执行平仓操作
-                if position["amount"] == 0:
-                    continue
-                if position["side"].lower() == "long":
-                    order = {
-                        "symbol": symbol,
-                        "order_type": "Market",
-                        "side": "Sell",
-                        "amount": position["amount"],
-                        "price": None,  # 市价平仓
-                    }
-                    self.trader.place_order(0, order, sync=self.sync)
-                elif position["side"].lower() == "short":
-                    order = {
-                        "symbol": symbol,
-                        "order_type": "Market",
-                        "side": "Buy",
-                        "amount": position["amount"],
-                        "price": None,  # 市价平仓
-                    }
-                    self.trader.place_order(0, order, sync=self.sync)
-                # 清除持仓信息
-                self.positions[symbol] = None
+        # 由于有对冲机制，当交割合约成交时永续合约会自动对冲，所以这里只需要平掉现货仓位即可
+        symbol = self.spot
+        # 平掉所有仓位
+        position = self.positions.get(symbol, None)
+        if position:
+            # 执行平仓操作
+            if position["amount"] == 0:
+                self.trader.log(
+                    f"没有持仓需要平仓: {json.dumps(position, indent=2)}",
+                    level="INFO",
+                )
+                return
+            if position["side"].lower() == "long":
+                order = {
+                    "symbol": symbol,
+                    "order_type": "Market",
+                    "side": "Sell",
+                    "amount": position["amount"],
+                    "price": None,  # 市价平仓
+                }
+                self.trader.place_order(0, order, sync=self.sync)
+                self.trader.log(
+                    f"市价平仓: {json.dumps(order, indent=2)}",
+                    level="INFO",
+                )
+            elif position["side"].lower() == "short":
+                order = {
+                    "symbol": symbol,
+                    "order_type": "Market",
+                    "side": "Buy",
+                    "amount": position["amount"],
+                    "price": None,  # 市价平仓
+                }
+                self.trader.place_order(0, order, sync=self.sync)
+                self.trader.log(
+                    f"市价平仓: {json.dumps(order, indent=2)}",
+                    level="INFO",
+                )
+            # 清除持仓信息
+            self.positions[symbol] = None
 
     def on_order(self, exchange, order):
         """处理订单数据
@@ -657,8 +670,13 @@ class Strategy(BaseStrategy):
         exchange: str - 交易所名称
         position: dict - 持仓数据
         """
+        if isinstance(position, list):
+            # 如果是列表，说明是多个持仓数据
+            for pos in position:
+                self.on_position(exchange, pos)
+            return
         # 先对symbol进行处理
-        # position["symbol"] = self.__process_symbol(position["symbol"])
+        position["symbol"] = self.__process_symbol(position["symbol"])
 
         self.trader.log(
             f"接收到持仓数据: {json.dumps(position, indent=2)}",
@@ -666,4 +684,4 @@ class Strategy(BaseStrategy):
         )
 
         # 更新持仓信息
-        # self.positions[position["symbol"]] = position
+        self.positions[position["symbol"]] = position
