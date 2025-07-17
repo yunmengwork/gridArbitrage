@@ -644,7 +644,12 @@ class Strategy(BaseStrategy):
                 else:
                     # 改单
                     last_price = order["price"]
-                    order["price"] = grid_order["maker_price"]
+                    order["price"] = (
+                        grid_order["maker_price"]
+                        if grid_order["maker_price"]
+                        > bbo_copy[self.future]["bid_price"]
+                        else bbo_copy[self.future]["ask_price"]
+                    )
                     # 统计订单延迟
                     self.order_delay_stats.add_when_submit(order, "amend_order")
                     # 统计滑点
@@ -671,7 +676,12 @@ class Strategy(BaseStrategy):
                 else:
                     # 改单
                     last_price = order["price"]
-                    order["price"] = grid_order["maker_price"]
+                    order["price"] = (
+                        grid_order["maker_price"]
+                        if grid_order["maker_price"]
+                        < bbo_copy[self.future]["ask_price"]
+                        else bbo_copy[self.future]["bid_price"]
+                    )
                     # 统计订单延迟
                     self.order_delay_stats.add_when_submit(order, "amend_order")
                     # 统计滑点
@@ -800,6 +810,11 @@ class Strategy(BaseStrategy):
                 grid_order["maker_price"] = np.round(
                     bbo_copy[self.future]["bid_price"] + 0.03, 2
                 )  # 由于交割合约买卖一档spread很大，可以适当提高买价
+                grid_order["maker_price"] = (
+                    grid_order["maker_price"]
+                    if grid_order["maker_price"] < bbo_copy[self.future]["ask_price"]
+                    else bbo_copy[self.future]["bid_price"]
+                )
                 grid_order["taker_price"] = bbo_copy[self.spot]["bid_price"]
                 # 执行卖出操作
                 placeSuccess = self._exec_grid_order(grid_order=grid_order)
@@ -824,6 +839,11 @@ class Strategy(BaseStrategy):
                 grid_order["maker_price"] = np.round(
                     bbo_copy[self.future]["ask_price"] - 0.03, 2
                 )  # 由于交割合约买卖一档spread很大，可以适当降低卖价
+                grid_order["maker_price"] = (
+                    grid_order["maker_price"]
+                    if grid_order["maker_price"] > bbo_copy[self.future]["bid_price"]
+                    else bbo_copy[self.future]["ask_price"]
+                )
                 grid_order["taker_price"] = bbo_copy[self.spot]["ask_price"]
                 # 执行买入操作
                 placeSuccess = self._exec_grid_order(grid_order=grid_order)
