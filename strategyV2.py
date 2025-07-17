@@ -3,9 +3,64 @@ from interface.base_strategy import BaseStrategy
 import numpy as np
 import time
 import json
+from collections import OrderedDict
 
 # class Order:
 # class GridOrder:
+
+
+class LatencyStats:
+    """延迟统计类"""
+
+    def __init__(self, max_capacity=1000):
+        self.max_capacity = max_capacity  # 每个orderType的最大容量
+        self.order_delay_stats = {
+            "place_order": OrderedDict(),  # 使用OrderedDict维护插入顺序
+            "cancel_order": OrderedDict(),
+            "amend_order": OrderedDict(),
+        }
+
+    def _create_stats_cid(self, order):
+        """创建cid，使用下划线合并cid与price*100"""
+        cid = order["cid"]
+        price = order["price"]
+        return f"{cid}_{int(price * 100)}"
+
+    def _ensure_capacity(self, order_type):
+        """确保指定orderType不超过最大容量，超过时删除最早的元素"""
+        if len(self.order_delay_stats[order_type]) >= self.max_capacity:
+            # 删除最早添加的元素
+            self.order_delay_stats[order_type].popitem(last=False)
+
+    def add_when_submit(self, order, order_type):
+        """添加下单延迟"""
+        stats_cid = self._create_stats_cid(order)
+
+        # 在添加新元素前检查容量
+        self._ensure_capacity(order_type)
+
+        self.order_delay_stats[order_type][stats_cid] = {
+            "local_place_time": time.time() * 1000,
+            "server_receive_time": None,
+            "status": "pending",
+        }
+
+    def add_when_recive(self, order, order_type):
+        """添加接收时间,并返回延迟"""
+        stats_cid = self._create_stats_cid(order)
+        if stats_cid in self.order_delay_stats[order_type]:
+            self.order_delay_stats[order_type][stats_cid]["server_receive_time"] = (
+                order["timestamp"]
+            )
+            self.order_delay_stats[order_type][stats_cid]["status"] = "done"
+            local_place_time = self.order_delay_stats[order_type][stats_cid][
+                "local_place_time"
+            ]
+            server_receive_time = self.order_delay_stats[order_type][stats_cid][
+                "server_receive_time"
+            ]
+            return server_receive_time - local_place_time
+        return None
 
 
 # 类名必须为Strategy
@@ -87,6 +142,11 @@ class Strategy(BaseStrategy):
         # 持续开仓信号，表明是稳定区间而不是大波动
         self.continuous_open_signal_min_num = 100  # 连续开仓信号最小数量
         self.continuous_open_signal = {}  # <grid_index, count>
+
+        # 对延迟进行统计，下单，撤单，取消订单延迟
+        self.order_delay_stats = LatencyStats()  # 延迟统计对象
+
+        # 对滑点进行统计
 
     def wait_lock_release(self, lock_name, msg=None, timeout=5):
         """等待锁释放"""
@@ -334,10 +394,13 @@ class Strategy(BaseStrategy):
                     # 改单
                     last_price = order["price"]
                     order["price"] = bbo_copy[self.future]["ask_price"]
+                    # 统计订单延迟
+                    self.order_delay_stats.add_when_submit(order, "amend_order")
                     res = self.trader.amend_order(1, order, sync=self.sync)
                     self.trader.tlog(
                         tag="改单",
-                        msg=f"订单 {cid}, 方向 {grid_order['side']} 原价 {last_price} -> 新价 {order['price']}",
+                        msg=f"订单 {cid}, 方向 {grid_order['side']} 原价 {last_price} -> 新价 {order['price']} \
+                            \n改单结果: {res}",
                         level="INFO",
                         interval=1,
                     )
@@ -352,15 +415,20 @@ class Strategy(BaseStrategy):
                     # 改单
                     last_price = order["price"]
                     order["price"] = bbo_copy[self.future]["bid_price"]
+                    # 统计订单延迟
+                    self.order_delay_stats.add_when_submit(order, "amend_order")
                     res = self.trader.amend_order(1, order, sync=self.sync)
                     self.trader.tlog(
                         tag="改单",
-                        msg=f"订单 {cid}, 方向 {grid_order['side']} 原价 {last_price} -> 新价 {order['price']}",
+                        msg=f"订单 {cid}, 方向 {grid_order['side']} 原价 {last_price} -> 新价 {order['price']} \
+                            \n改单结果: {res}",
                         level="INFO",
                         interval=1,
                     )
             else:
                 # 取消订单
+                # 统计订单延迟
+                self.order_delay_stats.add_when_submit(order, "cancel_order")
                 res = self.trader.batch_cancel_order_by_id(
                     1,
                     client_order_ids=[cid],
@@ -369,7 +437,8 @@ class Strategy(BaseStrategy):
                 )
                 self.trader.tlog(
                     tag="取消订单",
-                    msg=f"订单 {cid} 不满足条件，取消订单",
+                    msg=f"订单 {cid} 不满足条件，取消订单 \
+                        \n取消结果: {res}",
                     level="INFO",
                     interval=1,
                 )
@@ -535,6 +604,8 @@ class Strategy(BaseStrategy):
             "price": grid_order["maker_price"],  # 使用网格的maker价格
             "time_in_force": "PostOnly",  # 持续有效
         }
+        # 统计订单延迟
+        self.order_delay_stats.add_when_submit(order, "place_order")
         # 执行挂单
         place_order_result = self.trader.place_order(1, order)
         if "Err" in place_order_result:
@@ -601,6 +672,31 @@ class Strategy(BaseStrategy):
         """
         # 先对symbol进行处理
         order["symbol"] = self.__process_symbol(order["symbol"])
+
+        # 统计延迟
+        stats_cid = self.order_delay_stats._create_stats_cid(order)
+        if order["status"].lower() == "open":
+            if stats_cid in self.order_delay_stats.order_delay_stats["amend_order"]:
+                latency = self.order_delay_stats.add_when_recive(order, "amend_order")
+                if latency is not None:
+                    self.trader.log(
+                        f"改单{stats_cid}延迟: {latency} ms",
+                        level="INFO",
+                    )
+            else:
+                latency = self.order_delay_stats.add_when_recive(order, "place_order")
+                if latency is not None:
+                    self.trader.log(
+                        f"下单{stats_cid}延迟: {latency} ms",
+                        level="INFO",
+                    )
+        elif order["status"].lower() == "canceled":
+            latency = self.order_delay_stats.add_when_recive(order, "cancel_order")
+            if latency is not None:
+                self.trader.log(
+                    f"撤单{stats_cid}延迟: {latency} ms",
+                    level="INFO",
+                )
 
         # 对冲单成交
         if order["symbol"] == self.spot and order["status"].lower() == "filled":
@@ -694,6 +790,8 @@ class Strategy(BaseStrategy):
             "price": place_price,
             "time_in_force": "GTC",  # 即时成交剩余撤销
         }
+        # 统计订单延迟
+        self.order_delay_stats.add_when_submit(order, "place_order")
         # 执行对冲操作
         self.trader.log(
             f"执行市价对冲操作: {json.dumps(order, indent=2)}",
