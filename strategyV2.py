@@ -3,6 +3,8 @@ from interface.base_strategy import BaseStrategy
 import numpy as np
 import time
 import json
+import csv
+import os
 from collections import OrderedDict
 
 # class Order:
@@ -12,13 +14,19 @@ from collections import OrderedDict
 class LatencyStats:
     """延迟统计类"""
 
-    def __init__(self, max_capacity=1000):
+    def __init__(self, max_capacity=1000, output_file=None, batch_size=30):
         self.max_capacity = max_capacity  # 每个orderType的最大容量
+        self.output_file = output_file  # CSV输出文件路径
+        self.batch_size = batch_size  # 批量保存的数据量
         self.order_delay_stats = {
             "place_order": OrderedDict(),  # 使用OrderedDict维护插入顺序
             "cancel_order": OrderedDict(),
             "amend_order": OrderedDict(),
         }
+
+        # 批量保存相关
+        self.pending_data = []  # 待保存的数据缓存
+        self.file_initialized = False  # 文件是否已初始化
 
     def _create_stats_cid(self, order):
         """创建cid，使用下划线合并cid与price*100"""
@@ -31,6 +39,61 @@ class LatencyStats:
         if len(self.order_delay_stats[order_type]) >= self.max_capacity:
             # 删除最早添加的元素
             self.order_delay_stats[order_type].popitem(last=False)
+
+    def _init_csv_file(self):
+        """初始化CSV文件，写入表头"""
+        if not self.output_file or self.file_initialized:
+            return
+
+        # 确保目录存在
+        os.makedirs(os.path.dirname(self.output_file), exist_ok=True)
+
+        # 写入CSV表头
+        with open(self.output_file, "w", newline="", encoding="utf-8") as f:
+            writer = csv.writer(f)
+            writer.writerow(
+                [
+                    "stats_cid",
+                    "order_type",
+                    "server_receive_time",
+                    "local_place_time",
+                    "latency_ms",
+                ]
+            )
+
+        self.file_initialized = True
+
+    def _save_batch_data(self):
+        """批量保存数据到CSV文件"""
+        if not self.output_file or not self.pending_data:
+            return
+
+        # 初始化文件（如果需要）
+        self._init_csv_file()
+
+        # 追加数据到CSV文件
+        with open(self.output_file, "a", newline="", encoding="utf-8") as f:
+            writer = csv.writer(f)
+            writer.writerows(self.pending_data)
+
+        # 清空缓存
+        self.pending_data = []
+
+    def _add_to_batch(
+        self, stats_cid, order_type, server_receive_time, local_place_time, latency
+    ):
+        """添加数据到批量缓存"""
+        if not self.output_file:
+            return
+
+        # 添加到缓存
+        self.pending_data.append(
+            [stats_cid, order_type, server_receive_time, local_place_time, latency]
+        )
+
+        # 检查是否达到批量保存阈值
+        if len(self.pending_data) >= self.batch_size:
+            self._save_batch_data()
 
     def add_when_submit(self, order, order_type):
         """添加下单延迟"""
@@ -59,8 +122,21 @@ class LatencyStats:
             server_receive_time = self.order_delay_stats[order_type][stats_cid][
                 "server_receive_time"
             ]
-            return server_receive_time - local_place_time
+
+            latency = server_receive_time - local_place_time
+
+            # 保存数据到批量缓存
+            self._add_to_batch(
+                stats_cid, order_type, server_receive_time, local_place_time, latency
+            )
+
+            return latency
         return None
+
+    def flush_pending_data(self):
+        """强制保存所有待保存的数据"""
+        if self.pending_data:
+            self._save_batch_data()
 
 
 # 类名必须为Strategy
@@ -144,7 +220,9 @@ class Strategy(BaseStrategy):
         self.continuous_open_signal = {}  # <grid_index, count>
 
         # 对延迟进行统计，下单，撤单，取消订单延迟
-        self.order_delay_stats = LatencyStats()  # 延迟统计对象
+        self.order_delay_stats = LatencyStats(
+            output_file=f"./stats/{int(time.time()*1000)}_order_delay.csv"
+        )  # 延迟统计对象
 
         # 对滑点进行统计
 

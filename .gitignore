@@ -3,3 +3,4 @@ logs/
 open_quant
 __pycache__/
 config.toml
+stats/
