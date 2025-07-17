@@ -384,16 +384,16 @@ class Strategy(BaseStrategy):
                 continue
 
             if grid_order["side"] == "buy" and grid_order["price"] >= buy_price:
-                grid_order["maker_price"] = bbo_copy[self.future]["ask_price"]
+                grid_order["maker_price"] = bbo_copy[self.future]["ask_price"] - 0.03
                 grid_order["taker_price"] = bbo_copy[self.spot]["ask_price"]
                 # 如果当前网格订单依旧满足条件，则不需要重新挂单
                 # 检查订单是否为远期卖价一档
-                if order["price"] == bbo_copy[self.future]["ask_price"]:
+                if order["price"] == grid_order["maker_price"]:
                     continue
                 else:
                     # 改单
                     last_price = order["price"]
-                    order["price"] = bbo_copy[self.future]["ask_price"]
+                    order["price"] = grid_order["maker_price"]
                     # 统计订单延迟
                     self.order_delay_stats.add_when_submit(order, "amend_order")
                     res = self.trader.amend_order(1, order, sync=self.sync)
@@ -405,16 +405,16 @@ class Strategy(BaseStrategy):
                         interval=1,
                     )
             elif grid_order["side"] == "sell" and grid_order["price"] <= sell_price:
-                grid_order["maker_price"] = bbo_copy[self.future]["bid_price"]
+                grid_order["maker_price"] = bbo_copy[self.future]["bid_price"] + 0.03
                 grid_order["taker_price"] = bbo_copy[self.spot]["bid_price"]
                 # 如果当前网格订单依旧满足条件，则不需要重新挂单
                 # 检查订单是否为远期买价一档
-                if order["price"] == bbo_copy[self.future]["bid_price"]:
+                if order["price"] == grid_order["maker_price"]:
                     continue
                 else:
                     # 改单
                     last_price = order["price"]
-                    order["price"] = bbo_copy[self.future]["bid_price"]
+                    order["price"] = grid_order["maker_price"]
                     # 统计订单延迟
                     self.order_delay_stats.add_when_submit(order, "amend_order")
                     res = self.trader.amend_order(1, order, sync=self.sync)
@@ -536,7 +536,9 @@ class Strategy(BaseStrategy):
                     # 如果连续开仓信号小于最小数量，不执行交易
                     self.continuous_open_signal[grid_index] += 1
                     continue
-                grid_order["maker_price"] = bbo_copy[self.future]["bid_price"]
+                grid_order["maker_price"] = (
+                    bbo_copy[self.future]["bid_price"] + 0.03
+                )  # 由于交割合约买卖一档spread很大，可以适当提高买价
                 grid_order["taker_price"] = bbo_copy[self.spot]["bid_price"]
                 # 执行卖出操作
                 placeSuccess = self._exec_grid_order(grid_order=grid_order)
@@ -558,7 +560,9 @@ class Strategy(BaseStrategy):
                     # 如果连续开仓信号小于最小数量，不执行交易
                     self.continuous_open_signal[grid_index] += 1
                     continue
-                grid_order["maker_price"] = bbo_copy[self.future]["ask_price"]
+                grid_order["maker_price"] = (
+                    bbo_copy[self.future]["ask_price"] - 0.03
+                )  # 由于交割合约买卖一档spread很大，可以适当降低卖价
                 grid_order["taker_price"] = bbo_copy[self.spot]["ask_price"]
                 # 执行买入操作
                 placeSuccess = self._exec_grid_order(grid_order=grid_order)
