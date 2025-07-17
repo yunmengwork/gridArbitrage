@@ -14,7 +14,7 @@ from collections import OrderedDict
 class LatencyStats:
     """延迟统计类"""
 
-    def __init__(self, max_capacity=1000, output_file=None, batch_size=30):
+    def __init__(self, max_capacity=1000, output_file=None, batch_size=10):
         self.max_capacity = max_capacity  # 每个orderType的最大容量
         self.output_file = output_file  # CSV输出文件路径
         self.batch_size = batch_size  # 批量保存的数据量
@@ -139,6 +139,174 @@ class LatencyStats:
             self._save_batch_data()
 
 
+class SlippageStats:
+    """滑点统计类"""
+
+    def __init__(self, max_capacity=1000, output_file=None, batch_size=4):
+        self.max_capacity = max_capacity  # 每个orderType的最大容量
+        self.output_file = output_file  # CSV输出文件路径
+        self.batch_size = batch_size  # 批量保存的数据量
+        self.order_slippage_stats = {
+            "hedge_order": OrderedDict(),  # 对冲订单滑点
+            "grid_order": OrderedDict(),  # 网格订单滑点
+        }
+
+        # 批量保存相关
+        self.pending_data = []  # 待保存的数据缓存
+        self.file_initialized = False  # 文件是否已初始化
+
+    def _ensure_capacity(self, order_type):
+        """确保指定orderType不超过最大容量，超过时删除最早的元素"""
+        if len(self.order_slippage_stats[order_type]) >= self.max_capacity:
+            # 删除最早添加的元素
+            self.order_slippage_stats[order_type].popitem(last=False)
+
+    def _init_csv_file(self):
+        """初始化CSV文件，写入表头"""
+        if not self.output_file or self.file_initialized:
+            return
+
+        # 确保目录存在
+        os.makedirs(os.path.dirname(self.output_file), exist_ok=True)
+
+        # 写入CSV表头
+        with open(self.output_file, "w", newline="", encoding="utf-8") as f:
+            writer = csv.writer(f)
+            writer.writerow(
+                [
+                    "stats_cid",
+                    "order_type",
+                    "expected_price",
+                    "actual_price",
+                    "slippage_abs",
+                    "slippage_bps",
+                    "side",
+                    "amount",
+                    "fill_time",
+                ]
+            )
+
+        self.file_initialized = True
+
+    def _save_batch_data(self):
+        """批量保存数据到CSV文件"""
+        if not self.output_file or not self.pending_data:
+            return
+
+        # 初始化文件（如果需要）
+        self._init_csv_file()
+
+        # 追加数据到CSV文件
+        with open(self.output_file, "a", newline="", encoding="utf-8") as f:
+            writer = csv.writer(f)
+            writer.writerows(self.pending_data)
+
+        # 清空缓存
+        self.pending_data = []
+
+    def _add_to_batch(
+        self,
+        cid,
+        order_type,
+        expected_price,
+        actual_price,
+        slippage_abs,
+        slippage_bps,
+        side,
+        amount,
+        fill_time,
+    ):
+        """添加数据到批量缓存"""
+        if not self.output_file:
+            return
+
+        # 添加到缓存
+        self.pending_data.append(
+            [
+                cid,
+                order_type,
+                expected_price,
+                actual_price,
+                slippage_abs,
+                slippage_bps,
+                side,
+                amount,
+                fill_time,
+            ]
+        )
+
+        # 检查是否达到批量保存阈值
+        if len(self.pending_data) >= self.batch_size:
+            self._save_batch_data()
+
+    def add_when_place(self, order, order_type, expected_price):
+        """添加下单时的期望价格"""
+        cid = order["cid"]
+
+        # 在添加新元素前检查容量
+        self._ensure_capacity(order_type)
+
+        self.order_slippage_stats[order_type][cid] = {
+            "expected_price": expected_price,
+            "order_info": {
+                "side": order.get("side", ""),
+                "amount": order.get("amount", 0),
+                "price": order.get("price", 0),
+            },
+            "status": "pending",
+        }
+
+    def add_when_filled(self, order, order_type):
+        """订单成交时计算滑点"""
+        cid = order["cid"]
+
+        if cid in self.order_slippage_stats[order_type]:
+            stats_data = self.order_slippage_stats[order_type][cid]
+            expected_price = stats_data["expected_price"]
+            actual_price = order.get("filled_avg_price", order.get("price", 0))
+            side = order.get("side", "").lower()
+            amount = order.get("filled", 0)
+            fill_time = order.get("timestamp", None)
+
+            # 计算滑点
+            if side == "buy":
+                # 买入时，实际价格高于期望价格为正滑点
+                slippage_abs = actual_price - expected_price
+            else:
+                # 卖出时，实际价格低于期望价格为正滑点
+                slippage_abs = expected_price - actual_price
+
+            # 计算基点滑点 (basis points)
+            slippage_bps = (
+                (slippage_abs / expected_price) * 10000 if expected_price > 0 else 0
+            )
+
+            # 保存数据到批量缓存
+            self._add_to_batch(
+                cid,
+                order_type,
+                expected_price,
+                actual_price,
+                slippage_abs,
+                slippage_bps,
+                side,
+                amount,
+                fill_time,
+            )
+
+            # 标记为已完成
+            stats_data["status"] = "filled"
+
+            return slippage_abs, slippage_bps
+
+        return None, None
+
+    def flush_pending_data(self):
+        """强制保存所有待保存的数据"""
+        if self.pending_data:
+            self._save_batch_data()
+
+
 # 类名必须为Strategy
 class Strategy(BaseStrategy):
     def __init__(self, cex_configs, dex_configs, config, trader: Trader):
@@ -225,6 +393,9 @@ class Strategy(BaseStrategy):
         )  # 延迟统计对象
 
         # 对滑点进行统计
+        self.slippage_stats = SlippageStats(
+            output_file=f"./stats/{int(time.time()*1000)}_slippage.csv"
+        )  # 滑点统计对象
 
     def wait_lock_release(self, lock_name, msg=None, timeout=5):
         """等待锁释放"""
@@ -462,7 +633,9 @@ class Strategy(BaseStrategy):
                 continue
 
             if grid_order["side"] == "buy" and grid_order["price"] >= buy_price:
-                grid_order["maker_price"] = bbo_copy[self.future]["ask_price"] - 0.03
+                grid_order["maker_price"] = np.round(
+                    bbo_copy[self.future]["ask_price"] - 0.03, 2
+                )
                 grid_order["taker_price"] = bbo_copy[self.spot]["ask_price"]
                 # 如果当前网格订单依旧满足条件，则不需要重新挂单
                 # 检查订单是否为远期卖价一档
@@ -474,6 +647,10 @@ class Strategy(BaseStrategy):
                     order["price"] = grid_order["maker_price"]
                     # 统计订单延迟
                     self.order_delay_stats.add_when_submit(order, "amend_order")
+                    # 统计滑点
+                    self.slippage_stats.add_when_place(
+                        order, "grid_order", grid_order["maker_price"]
+                    )
                     res = self.trader.amend_order(1, order, sync=self.sync)
                     self.trader.tlog(
                         tag="改单",
@@ -483,7 +660,9 @@ class Strategy(BaseStrategy):
                         interval=1,
                     )
             elif grid_order["side"] == "sell" and grid_order["price"] <= sell_price:
-                grid_order["maker_price"] = bbo_copy[self.future]["bid_price"] + 0.03
+                grid_order["maker_price"] = np.round(
+                    bbo_copy[self.future]["bid_price"] + 0.03, 2
+                )
                 grid_order["taker_price"] = bbo_copy[self.spot]["bid_price"]
                 # 如果当前网格订单依旧满足条件，则不需要重新挂单
                 # 检查订单是否为远期买价一档
@@ -495,6 +674,10 @@ class Strategy(BaseStrategy):
                     order["price"] = grid_order["maker_price"]
                     # 统计订单延迟
                     self.order_delay_stats.add_when_submit(order, "amend_order")
+                    # 统计滑点
+                    self.slippage_stats.add_when_place(
+                        order, "grid_order", grid_order["maker_price"]
+                    )
                     res = self.trader.amend_order(1, order, sync=self.sync)
                     self.trader.tlog(
                         tag="改单",
@@ -614,8 +797,8 @@ class Strategy(BaseStrategy):
                     # 如果连续开仓信号小于最小数量，不执行交易
                     self.continuous_open_signal[grid_index] += 1
                     continue
-                grid_order["maker_price"] = (
-                    bbo_copy[self.future]["bid_price"] + 0.03
+                grid_order["maker_price"] = np.round(
+                    bbo_copy[self.future]["bid_price"] + 0.03, 2
                 )  # 由于交割合约买卖一档spread很大，可以适当提高买价
                 grid_order["taker_price"] = bbo_copy[self.spot]["bid_price"]
                 # 执行卖出操作
@@ -638,8 +821,8 @@ class Strategy(BaseStrategy):
                     # 如果连续开仓信号小于最小数量，不执行交易
                     self.continuous_open_signal[grid_index] += 1
                     continue
-                grid_order["maker_price"] = (
-                    bbo_copy[self.future]["ask_price"] - 0.03
+                grid_order["maker_price"] = np.round(
+                    bbo_copy[self.future]["ask_price"] - 0.03, 2
                 )  # 由于交割合约买卖一档spread很大，可以适当降低卖价
                 grid_order["taker_price"] = bbo_copy[self.spot]["ask_price"]
                 # 执行买入操作
@@ -688,6 +871,12 @@ class Strategy(BaseStrategy):
         }
         # 统计订单延迟
         self.order_delay_stats.add_when_submit(order, "place_order")
+
+        # 统计滑点 - 记录期望价格
+        self.slippage_stats.add_when_place(
+            order, "grid_order", grid_order["maker_price"]
+        )
+
         # 执行挂单
         place_order_result = self.trader.place_order(1, order)
         if "Err" in place_order_result:
@@ -780,6 +969,24 @@ class Strategy(BaseStrategy):
                     level="INFO",
                 )
 
+        # 统计滑点
+        if order["status"].lower() == "filled":
+            cid = order["cid"]
+            slippage_abs, slippage_bps = None, None
+            if cid in self.slippage_stats.order_slippage_stats["grid_order"]:
+                slippage_abs, slippage_bps = self.slippage_stats.add_when_filled(
+                    order, "grid_order"
+                )
+            elif cid in self.slippage_stats.order_slippage_stats["hedge_order"]:
+                slippage_abs, slippage_bps = self.slippage_stats.add_when_filled(
+                    order, "hedge_order"
+                )
+            if slippage_abs is not None:
+                self.trader.log(
+                    f"订单{order['cid']}滑点: {slippage_abs:.6f} ({slippage_bps:.2f} bps)",
+                    level="INFO",
+                )
+
         # 对冲单成交
         if order["symbol"] == self.spot and order["status"].lower() == "filled":
             self.trader.log(
@@ -821,9 +1028,13 @@ class Strategy(BaseStrategy):
             )
             side = "Buy" if order["side"] == "Sell" else "Sell"
             amount = order["filled"]
-            self.exec_hedge(self.spot, side, amount)
             # 网格订单成交，处理
             grid_order = self.cid_to_grid_pending_order.get(order["cid"], None)
+            # 使用taker价格对冲
+            if grid_order is not None and "taker_price" in grid_order:
+                self.exec_hedge(self.spot, side, amount, grid_order["taker_price"])
+            else:
+                self.exec_hedge(self.spot, side, amount)
             if grid_order:
                 # 重新挂网格
                 new_grid_order = {}
@@ -851,19 +1062,36 @@ class Strategy(BaseStrategy):
             # 删除order
             self._remove_pending_order(order["cid"])
 
-    def exec_hedge(self, symbol, side, amount):
+    def exec_hedge(self, symbol, side, amount, price=None):
         """执行对冲操作, 市价对冲
         symbol: str - 交易对
         side: str - 方向，'buy' 或 'sell'
         amount: float - 数量
+        price: float - 价格
         """
-        place_price = (
-            np.round(
-                (self.bbo[symbol]["bid_price"] * (1 - 0.002)), 2
-            )  # 这里使用限价加上0.2%的滑点忍受，2是因为ETH的交割与永续的最小报价单位是0.01
-            if side.lower() == "sell"
-            else np.round((self.bbo[symbol]["ask_price"] * (1 + 0.002)), 2)
-        )
+        if price is None:
+            place_price = (
+                np.round(
+                    (self.bbo[symbol]["bid_price"] * (1 - 0.002)), 2
+                )  # 这里使用限价加上0.2%的滑点忍受，2是因为ETH的交割与永续的最小报价单位是0.01
+                if side.lower() == "sell"
+                else np.round((self.bbo[symbol]["ask_price"] * (1 + 0.002)), 2)
+            )
+            expected_price = (
+                self.bbo[symbol]["bid_price"]
+                if side.lower() == "sell"
+                else self.bbo[symbol]["ask_price"]
+            )
+        else:
+            place_price = (
+                np.round(
+                    (price * (1 - 0.002)), 2
+                )  # 这里使用限价加上0.2%的滑点忍受，2是因为ETH的交割与永续的最小报价单位是0.01
+                if side.lower() == "sell"
+                else np.round(price * (1 + 0.002), 2)
+            )
+            expected_price = price
+
         cid = self.trader.create_cid(self.cex_configs[0]["exchange"])
         order = {
             "cid": cid,
@@ -876,6 +1104,8 @@ class Strategy(BaseStrategy):
         }
         # 统计订单延迟
         self.order_delay_stats.add_when_submit(order, "place_order")
+        # 统计滑点 - 记录期望价格
+        self.slippage_stats.add_when_place(order, "hedge_order", expected_price)
         # 执行对冲操作
         self.trader.log(
             f"执行市价对冲操作: {json.dumps(order, indent=2)}",
