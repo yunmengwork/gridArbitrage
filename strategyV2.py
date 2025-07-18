@@ -307,6 +307,43 @@ class SlippageStats:
             self._save_batch_data()
 
 
+class dealPriceStats:
+    def __init__(self):
+        self.grid_order_stats = (
+            {}
+        )  # 网格订单成交价格统计{<hedge_order_cid>: {"grid_order": grid_order, "hedge_order": hedge_order, "future_deal_price": future_deal_price}}
+
+    def add_deal_grid_order(self, hedge_order_cid, grid_order, future_deal_price):
+        """添加成交的网格订单价格"""
+        self.grid_order_stats[hedge_order_cid] = {
+            "grid_order": grid_order,
+            "hedge_order": None,
+            "future_deal_price": future_deal_price,
+        }
+
+    def add_deal_hedge_order(self, hedge_order):
+        """添加成交的对冲订单价格"""
+        hedge_order_cid = hedge_order["cid"]
+        if hedge_order_cid not in self.grid_order_stats:
+            return None
+        self.grid_order_stats[hedge_order_cid]["hedge_order"] = hedge_order
+
+        hedge_deal_price = hedge_order.get(
+            "filled_avg_price", hedge_order.get("price", 0)
+        )
+        future_deal_price = self.grid_order_stats[hedge_order_cid]["future_deal_price"]
+        grid_deal_price = hedge_deal_price / future_deal_price
+
+        # 计算网格滑点
+        side = self.grid_order_stats[hedge_order_cid]["grid_order"]["side"]
+        expected_price = self.grid_order_stats[hedge_order_cid]["grid_order"]["price"]
+        if side == "buy":
+            grid_slippage = grid_deal_price - expected_price
+        else:
+            grid_slippage = expected_price - grid_deal_price
+        return grid_deal_price, grid_slippage
+
+
 # 类名必须为Strategy
 class Strategy(BaseStrategy):
     def __init__(self, cex_configs, dex_configs, config, trader: Trader):
@@ -396,6 +433,9 @@ class Strategy(BaseStrategy):
         self.slippage_stats = SlippageStats(
             output_file=f"./stats/{int(time.time()*1000)}_slippage.csv"
         )  # 滑点统计对象
+
+        # 对网格成交价格进行统计
+        self.deal_price_stats = dealPriceStats()  # 成交价格统计对象
 
     def wait_lock_release(self, lock_name, msg=None, timeout=5):
         """等待锁释放"""
@@ -1013,8 +1053,18 @@ class Strategy(BaseStrategy):
 
         # 对冲单成交
         if order["symbol"] == self.spot and order["status"].lower() == "filled":
+            # 统计网格成交价
+            grid_order_deal_price, grid_order_slippage = (
+                self.deal_price_stats.add_deal_hedge_order(hedge_order=order)
+            )
+            grid_order = self.deal_price_stats.grid_order_stats.get(
+                order["cid"], {}
+            ).get("grid_order", None)
             self.trader.log(
-                f"对冲订单成交: {json.dumps(order, indent=2)}",
+                f"对冲订单成交: {json.dumps(order, indent=2)}\
+                    \n-> 对应网格订单: {json.dumps(grid_order, indent=2)}\
+                    \n-> 网格成交价: {grid_order_deal_price}\
+                    \n-> 网格滑点: {grid_order_slippage}",
                 level="INFO",
             )
 
@@ -1054,11 +1104,20 @@ class Strategy(BaseStrategy):
             amount = order["filled"]
             # 网格订单成交，处理
             grid_order = self.cid_to_grid_pending_order.get(order["cid"], None)
+            # 统计成交价格
+            hedge_order_cid = self.trader.create_cid(self.cex_configs[0]["exchange"])
+            self.deal_price_stats.add_deal_grid_order(
+                hedge_order_cid,
+                grid_order,
+                order["filled_avg_price"],
+            )
             # 使用taker价格对冲
             if grid_order is not None and "taker_price" in grid_order:
-                self.exec_hedge(self.spot, side, amount, grid_order["taker_price"])
+                self.exec_hedge(
+                    hedge_order_cid, self.spot, side, amount, grid_order["taker_price"]
+                )
             else:
-                self.exec_hedge(self.spot, side, amount)
+                self.exec_hedge(hedge_order_cid, self.spot, side, amount)
             if grid_order:
                 # 重新挂网格
                 new_grid_order = {}
@@ -1086,8 +1145,9 @@ class Strategy(BaseStrategy):
             # 删除order
             self._remove_pending_order(order["cid"])
 
-    def exec_hedge(self, symbol, side, amount, price=None):
+    def exec_hedge(self, cid, symbol, side, amount, price=None):
         """执行对冲操作, 市价对冲
+        cid: str - 客户端订单ID
         symbol: str - 交易对
         side: str - 方向，'buy' 或 'sell'
         amount: float - 数量
@@ -1116,7 +1176,7 @@ class Strategy(BaseStrategy):
             )
             expected_price = price
 
-        cid = self.trader.create_cid(self.cex_configs[0]["exchange"])
+        # cid = self.trader.create_cid(self.cex_configs[0]["exchange"])
         order = {
             "cid": cid,
             "symbol": symbol,
