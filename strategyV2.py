@@ -633,9 +633,11 @@ class Strategy(BaseStrategy):
                 continue
 
             if grid_order["side"] == "buy" and grid_order["price"] >= buy_price:
-                grid_order["maker_price"] = np.round(
-                    bbo_copy[self.future]["ask_price"] - 0.03, 2
-                )
+                grid_order["maker_price"] = (
+                    np.round(bbo_copy[self.future]["ask_price"] - 0.03, 2)
+                    if grid_order["maker_price"] > bbo_copy[self.future]["ask_price"]
+                    else grid_order["maker_price"]
+                )  # 确保自己是最前面的订单
                 grid_order["taker_price"] = bbo_copy[self.spot]["ask_price"]
                 # 如果当前网格订单依旧满足条件，则不需要重新挂单
                 # 检查订单是否为远期卖价一档
@@ -665,9 +667,11 @@ class Strategy(BaseStrategy):
                         interval=1,
                     )
             elif grid_order["side"] == "sell" and grid_order["price"] <= sell_price:
-                grid_order["maker_price"] = np.round(
-                    bbo_copy[self.future]["bid_price"] + 0.03, 2
-                )
+                grid_order["maker_price"] = (
+                    np.round(bbo_copy[self.future]["bid_price"] + 0.03, 2)
+                    if grid_order["maker_price"] < bbo_copy[self.future]["bid_price"]
+                    else grid_order["maker_price"]
+                )  # 确保自己是最前面的订单
                 grid_order["taker_price"] = bbo_copy[self.spot]["bid_price"]
                 # 如果当前网格订单依旧满足条件，则不需要重新挂单
                 # 检查订单是否为远期买价一档
