@@ -901,7 +901,11 @@ class Strategy(BaseStrategy):
                 # 交易执行成功，需要重置连续开仓信号
                 self.continuous_open_signal[grid_index] = 0
             else:
-                self.continuous_open_signal[grid_index] = 0  # 重置连续开仓信号
+                self.continuous_open_signal[
+                    grid_index
+                ] -= 5  # 如果不满足开仓条件，减少连续开仓信号计数
+                if self.continuous_open_signal[grid_index] < 0:
+                    self.continuous_open_signal[grid_index] = 0
                 continue
 
             # 从网格挂单中移除正在执行的订单
