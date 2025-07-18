@@ -308,10 +308,94 @@ class SlippageStats:
 
 
 class dealPriceStats:
-    def __init__(self):
+    def __init__(self, output_file=None, batch_size=4):
+        self.output_file = output_file  # CSV输出文件路径
+        self.batch_size = batch_size  # 批量保存的数据量
         self.grid_order_stats = (
             {}
         )  # 网格订单成交价格统计{<hedge_order_cid>: {"grid_order": grid_order, "hedge_order": hedge_order, "future_deal_price": future_deal_price}}
+
+        # 批量保存相关
+        self.pending_data = []  # 待保存的数据缓存
+        self.file_initialized = False  # 文件是否已初始化
+
+    def _init_csv_file(self):
+        """初始化CSV文件，写入表头"""
+        if not self.output_file or self.file_initialized:
+            return
+
+        # 确保目录存在
+        os.makedirs(os.path.dirname(self.output_file), exist_ok=True)
+
+        # 写入CSV表头
+        with open(self.output_file, "w", newline="", encoding="utf-8") as f:
+            writer = csv.writer(f)
+            writer.writerow(
+                [
+                    "hedge_order_cid",
+                    "grid_side",
+                    "grid_expected_price",
+                    "grid_actual_price",
+                    "grid_slippage",
+                    "future_deal_price",
+                    "hedge_deal_price",
+                    "grid_amount",
+                    "deal_time",
+                ]
+            )
+
+        self.file_initialized = True
+
+    def _save_batch_data(self):
+        """批量保存数据到CSV文件"""
+        if not self.output_file or not self.pending_data:
+            return
+
+        # 初始化文件（如果需要）
+        self._init_csv_file()
+
+        # 追加数据到CSV文件
+        with open(self.output_file, "a", newline="", encoding="utf-8") as f:
+            writer = csv.writer(f)
+            writer.writerows(self.pending_data)
+
+        # 清空缓存
+        self.pending_data = []
+
+    def _add_to_batch(
+        self,
+        hedge_order_cid,
+        grid_side,
+        grid_expected_price,
+        grid_actual_price,
+        grid_slippage,
+        future_deal_price,
+        hedge_deal_price,
+        grid_amount,
+        deal_time,
+    ):
+        """添加数据到批量缓存"""
+        if not self.output_file:
+            return
+
+        # 添加到缓存
+        self.pending_data.append(
+            [
+                hedge_order_cid,
+                grid_side,
+                grid_expected_price,
+                grid_actual_price,
+                grid_slippage,
+                future_deal_price,
+                hedge_deal_price,
+                grid_amount,
+                deal_time,
+            ]
+        )
+
+        # 检查是否达到批量保存阈值
+        if len(self.pending_data) >= self.batch_size:
+            self._save_batch_data()
 
     def add_deal_grid_order(self, hedge_order_cid, grid_order, future_deal_price):
         """添加成交的网格订单价格"""
@@ -335,13 +419,33 @@ class dealPriceStats:
         grid_deal_price = hedge_deal_price / future_deal_price
 
         # 计算网格滑点
-        side = self.grid_order_stats[hedge_order_cid]["grid_order"]["side"]
-        expected_price = self.grid_order_stats[hedge_order_cid]["grid_order"]["price"]
+        grid_order = self.grid_order_stats[hedge_order_cid]["grid_order"]
+        side = grid_order["side"]
+        expected_price = grid_order["price"]
         if side == "buy":
             grid_slippage = grid_deal_price - expected_price
         else:
             grid_slippage = expected_price - grid_deal_price
+
+        # 保存数据到批量缓存
+        self._add_to_batch(
+            hedge_order_cid,
+            side,
+            expected_price,
+            grid_deal_price,
+            grid_slippage,
+            future_deal_price,
+            hedge_deal_price,
+            hedge_order.get("filled", 0),
+            hedge_order.get("timestamp", None),
+        )
+
         return grid_deal_price, grid_slippage
+
+    def flush_pending_data(self):
+        """强制保存所有待保存的数据"""
+        if self.pending_data:
+            self._save_batch_data()
 
 
 # 类名必须为Strategy
@@ -435,7 +539,9 @@ class Strategy(BaseStrategy):
         )  # 滑点统计对象
 
         # 对网格成交价格进行统计
-        self.deal_price_stats = dealPriceStats()  # 成交价格统计对象
+        self.deal_price_stats = dealPriceStats(
+            output_file=f"./stats/{int(time.time()*1000)}_deal_price.csv"
+        )  # 成交价格统计对象
 
     def wait_lock_release(self, lock_name, msg=None, timeout=5):
         """等待锁释放"""
