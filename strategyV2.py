@@ -780,7 +780,7 @@ class Strategy(BaseStrategy):
 
             if grid_order["side"] == "buy" and grid_order["price"] >= buy_price:
                 grid_order["maker_price"] = (
-                    np.round(bbo_copy[self.future]["ask_price"] - 0.03, 2)
+                    np.round(bbo_copy[self.future]["ask_price"] - 0.1, 2)
                     if grid_order["maker_price"] > bbo_copy[self.future]["ask_price"]
                     else grid_order["maker_price"]
                 )  # 确保自己是最前面的订单
@@ -814,7 +814,7 @@ class Strategy(BaseStrategy):
                     )
             elif grid_order["side"] == "sell" and grid_order["price"] <= sell_price:
                 grid_order["maker_price"] = (
-                    np.round(bbo_copy[self.future]["bid_price"] + 0.03, 2)
+                    np.round(bbo_copy[self.future]["bid_price"] + 0.1, 2)
                     if grid_order["maker_price"] < bbo_copy[self.future]["bid_price"]
                     else grid_order["maker_price"]
                 )  # 确保自己是最前面的订单
@@ -958,7 +958,7 @@ class Strategy(BaseStrategy):
                     self.continuous_open_signal[grid_index] += 1
                     continue
                 grid_order["maker_price"] = np.round(
-                    bbo_copy[self.future]["bid_price"] + 0.03, 2
+                    bbo_copy[self.future]["bid_price"] + 0.1, 2
                 )  # 由于交割合约买卖一档spread很大，可以适当提高买价
                 grid_order["maker_price"] = (
                     grid_order["maker_price"]
@@ -987,7 +987,7 @@ class Strategy(BaseStrategy):
                     self.continuous_open_signal[grid_index] += 1
                     continue
                 grid_order["maker_price"] = np.round(
-                    bbo_copy[self.future]["ask_price"] - 0.03, 2
+                    bbo_copy[self.future]["ask_price"] - 0.1, 2
                 )  # 由于交割合约买卖一档spread很大，可以适当降低卖价
                 grid_order["maker_price"] = (
                     grid_order["maker_price"]
