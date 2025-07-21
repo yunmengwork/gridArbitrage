@@ -530,9 +530,9 @@ class Strategy(BaseStrategy):
         self.grid_orders_lock = False  # 锁，防止多线程冲突
         self.continuous_open_signal_lock = False  # 锁，防止多线程冲突
 
-        # 最小的下单size的精度
-        self.min_size_precision = self.config.get("min_size_precision", 0.01)
-        self.size_round_num = int(1 / self.min_size_precision)  # 精度转换因子
+        # 最小的下单price的精度
+        self.min_price_precision = self.config.get("min_price_precision", 0.01)
+        self.price_round_num = int(1 / self.min_price_precision)  # 精度转换因子
 
         # 挂在一档前多少个价格
         self.maker_price_offset = self.config.get("maker_price_offset", 0.1)
@@ -811,7 +811,7 @@ class Strategy(BaseStrategy):
                 grid_order["maker_price"] = (
                     np.round(
                         bbo_copy[self.future]["ask_price"] - self.maker_price_offset,
-                        self.size_round_num,
+                        self.price_round_num,
                     )
                     if grid_order["maker_price"] > bbo_copy[self.future]["ask_price"]
                     else grid_order["maker_price"]
@@ -819,7 +819,10 @@ class Strategy(BaseStrategy):
                 grid_order["taker_price"] = bbo_copy[self.spot]["ask_price"]
                 # 如果当前网格订单依旧满足条件，则不需要重新挂单
                 # 检查订单是否为远期卖价一档
-                if order["price"] == grid_order["maker_price"]:
+                if (
+                    abs(order["price"] - grid_order["maker_price"])
+                    < self.min_price_precision
+                ):
                     continue
                 else:
                     # 改单
@@ -848,7 +851,7 @@ class Strategy(BaseStrategy):
                 grid_order["maker_price"] = (
                     np.round(
                         bbo_copy[self.future]["bid_price"] + self.maker_price_offset,
-                        self.size_round_num,
+                        self.price_round_num,
                     )
                     if grid_order["maker_price"] < bbo_copy[self.future]["bid_price"]
                     else grid_order["maker_price"]
@@ -856,7 +859,10 @@ class Strategy(BaseStrategy):
                 grid_order["taker_price"] = bbo_copy[self.spot]["bid_price"]
                 # 如果当前网格订单依旧满足条件，则不需要重新挂单
                 # 检查订单是否为远期买价一档
-                if order["price"] == grid_order["maker_price"]:
+                if (
+                    abs(order["price"] - grid_order["maker_price"])
+                    < self.min_price_precision
+                ):
                     continue
                 else:
                     # 改单
@@ -994,7 +1000,7 @@ class Strategy(BaseStrategy):
                     continue
                 grid_order["maker_price"] = np.round(
                     bbo_copy[self.future]["bid_price"] + self.maker_price_offset,
-                    self.size_round_num,
+                    self.price_round_num,
                 )  # 由于交割合约买卖一档spread很大，可以适当提高买价
                 grid_order["maker_price"] = (
                     grid_order["maker_price"]
@@ -1028,7 +1034,7 @@ class Strategy(BaseStrategy):
                     continue
                 grid_order["maker_price"] = np.round(
                     bbo_copy[self.future]["ask_price"] - self.maker_price_offset,
-                    self.size_round_num,
+                    self.price_round_num,
                 )  # 由于交割合约买卖一档spread很大，可以适当降低卖价
                 grid_order["maker_price"] = (
                     grid_order["maker_price"]
@@ -1137,7 +1143,7 @@ class Strategy(BaseStrategy):
                     "side": "Sell",
                     "amount": position["amount"],
                     "price": np.round(
-                        self.bbo[self.future]["bid_price"] * 0.99, self.size_round_num
+                        self.bbo[self.future]["bid_price"] * 0.99, self.price_round_num
                     ),  # 市价平仓
                     "time_in_force": "GTC",  # 持续有效
                 }
@@ -1155,7 +1161,7 @@ class Strategy(BaseStrategy):
                     "side": "Buy",
                     "amount": position["amount"],
                     "price": np.round(
-                        self.bbo[self.future]["ask_price"] * 1.01, self.size_round_num
+                        self.bbo[self.future]["ask_price"] * 1.01, self.price_round_num
                     ),  # 市价平仓
                     "time_in_force": "GTC",  # 持续有效
                 }
@@ -1324,11 +1330,11 @@ class Strategy(BaseStrategy):
         if price is None:
             place_price = (
                 np.round(
-                    (self.bbo[symbol]["bid_price"] * (1 - 0.002)), self.size_round_num
+                    (self.bbo[symbol]["bid_price"] * (1 - 0.002)), self.price_round_num
                 )  # 这里使用限价加上0.2%的滑点忍受，2是因为ETH的交割与永续的最小报价单位是0.01
                 if side.lower() == "sell"
                 else np.round(
-                    (self.bbo[symbol]["ask_price"] * (1 + 0.002)), self.size_round_num
+                    (self.bbo[symbol]["ask_price"] * (1 + 0.002)), self.price_round_num
                 )
             )
             expected_price = (
@@ -1339,10 +1345,10 @@ class Strategy(BaseStrategy):
         else:
             place_price = (
                 np.round(
-                    (price * (1 - 0.002)), self.size_round_num
+                    (price * (1 - 0.002)), self.price_round_num
                 )  # 这里使用限价加上0.2%的滑点忍受，2是因为ETH的交割与永续的最小报价单位是0.01
                 if side.lower() == "sell"
-                else np.round(price * (1 + 0.002), self.size_round_num)
+                else np.round(price * (1 + 0.002), self.price_round_num)
             )
             expected_price = price
 
