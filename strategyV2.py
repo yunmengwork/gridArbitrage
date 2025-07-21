@@ -473,16 +473,22 @@ class Strategy(BaseStrategy):
         self.bbo = {symbol: None for symbol in self.symbols}
 
         # 时间参数
-        self.time_tolerance = 5  # 时间容忍度，单位为秒
+        self.time_tolerance = self.config.get(
+            "time_tolerance", 5
+        )  # 时间容忍度，单位为秒
 
         # 辅助变量
-        self.short_span = 3 * 60 * 60 * 100
-        self.long_span = 36 * 60 * 60 * 100
+        self.short_span = self.config.get("ewm_config", {}).get(
+            "short_span", 3 * 60 * 60 * 100
+        )
+        self.long_span = self.config.get("ewm_config", {}).get(
+            "long_span", 36 * 60 * 60 * 100
+        )
         self.short_ewm = None
         self.long_ewm = None
 
         # 异常阈值
-        self.abnormal_threshold = 0.003
+        self.abnormal_threshold = self.config.get("abnormal_threshold", 0.003)
 
         # 网格
         self.grid_interval = self.config.get("grid_config", {}).get(
@@ -494,9 +500,9 @@ class Strategy(BaseStrategy):
         self.last_grid_index = None
         # 网格挂单
         self.grid_orders = {}  # 挂单列表，<grid_index, grid_order>
-        self.reorder_threshold = (
-            0.5  # 网格重新挂单的阈值, 需要更新网格是base_price在网格中部50%以内
-        )
+        self.reorder_threshold = self.config.get(
+            "reorder_threshold", 0.5
+        )  # 网格重新挂单的阈值, 需要更新网格是base_price在网格中部50%以内
         self.cid_to_grid_pending_order = (
             {}
         )  # cid到网格挂单的映射, 用于跟踪网格挂单{"cid": grid_order}
@@ -505,10 +511,10 @@ class Strategy(BaseStrategy):
         self.trade_amount = 0.008  # 每次交易的数量
 
         # 设置杠杆
-        self.leverage = 3
+        self.leverage = self.config.get("leverage", 3)  # 杠杆倍数
 
         # sync
-        self.sync = False  # 是否同步执行
+        self.sync = self.config.get("sync", False)  # 是否同步执行
 
         # 订单管理
         self.pending_orders = {}  # 等待执行的订单列表
@@ -524,8 +530,31 @@ class Strategy(BaseStrategy):
         self.grid_orders_lock = False  # 锁，防止多线程冲突
         self.continuous_open_signal_lock = False  # 锁，防止多线程冲突
 
+        # 最小的下单size的精度
+        self.min_size_precision = self.config.get("min_size_precision", 0.01)
+        self.size_round_num = int(1 / self.min_size_precision)  # 精度转换因子
+
+        # 挂在一档前多少个价格
+        self.maker_price_offset = self.config.get("maker_price_offset", 0.1)
+
         # 持续开仓信号，表明是稳定区间而不是大波动
-        self.continuous_open_signal_min_num = 30  # 连续开仓信号最小数量
+        # self.continuous_open_signal_min_num = 30  # 连续开仓信号最小数量
+        # self.continuous_open_signal_adjust_num = 3  # 调整时-3
+        # self.continuous_open_signal_open_adjust_num = 10  # 开仓时-10
+        self.continuous_open_signal_config = self.config.get(
+            "continuous_open_signal_config", {}
+        )
+        self.continuous_open_signal_min_num = self.continuous_open_signal_config.get(
+            "continuous_open_signal_min_num", 30
+        )
+        self.continuous_open_signal_adjust_num = self.continuous_open_signal_config.get(
+            "continuous_open_signal_adjust_num", 3
+        )
+        self.continuous_open_signal_open_adjust_num = (
+            self.continuous_open_signal_config.get(
+                "continuous_open_signal_open_adjust_num", 10
+            )
+        )
         self.continuous_open_signal = {}  # <grid_index, count>
 
         # 对延迟进行统计，下单，撤单，取消订单延迟
@@ -780,7 +809,10 @@ class Strategy(BaseStrategy):
 
             if grid_order["side"] == "buy" and grid_order["price"] >= buy_price:
                 grid_order["maker_price"] = (
-                    np.round(bbo_copy[self.future]["ask_price"] - 0.1, 2)
+                    np.round(
+                        bbo_copy[self.future]["ask_price"] - self.maker_price_offset,
+                        self.size_round_num,
+                    )
                     if grid_order["maker_price"] > bbo_copy[self.future]["ask_price"]
                     else grid_order["maker_price"]
                 )  # 确保自己是最前面的订单
@@ -814,7 +846,10 @@ class Strategy(BaseStrategy):
                     )
             elif grid_order["side"] == "sell" and grid_order["price"] <= sell_price:
                 grid_order["maker_price"] = (
-                    np.round(bbo_copy[self.future]["bid_price"] + 0.1, 2)
+                    np.round(
+                        bbo_copy[self.future]["bid_price"] + self.maker_price_offset,
+                        self.size_round_num,
+                    )
                     if grid_order["maker_price"] < bbo_copy[self.future]["bid_price"]
                     else grid_order["maker_price"]
                 )  # 确保自己是最前面的订单
@@ -958,7 +993,8 @@ class Strategy(BaseStrategy):
                     self.continuous_open_signal[grid_index] += 1
                     continue
                 grid_order["maker_price"] = np.round(
-                    bbo_copy[self.future]["bid_price"] + 0.1, 2
+                    bbo_copy[self.future]["bid_price"] + self.maker_price_offset,
+                    self.size_round_num,
                 )  # 由于交割合约买卖一档spread很大，可以适当提高买价
                 grid_order["maker_price"] = (
                     grid_order["maker_price"]
@@ -975,8 +1011,12 @@ class Strategy(BaseStrategy):
                         \n执行卖出操作: {json.dumps(grid_order, indent=2)}",
                     level="INFO",
                 )
-                # 交易执行成功，需要重置连续开仓信号
-                self.continuous_open_signal[grid_index] = 0
+                # 交易执行成功，需要调整连续开仓信号
+                self.continuous_open_signal[
+                    grid_index
+                ] -= self.continuous_open_signal_open_adjust_num
+                if self.continuous_open_signal[grid_index] < 0:
+                    self.continuous_open_signal[grid_index] = 0
 
             elif (
                 grid_order["side"] == "buy"
@@ -987,7 +1027,8 @@ class Strategy(BaseStrategy):
                     self.continuous_open_signal[grid_index] += 1
                     continue
                 grid_order["maker_price"] = np.round(
-                    bbo_copy[self.future]["ask_price"] - 0.1, 2
+                    bbo_copy[self.future]["ask_price"] - self.maker_price_offset,
+                    self.size_round_num,
                 )  # 由于交割合约买卖一档spread很大，可以适当降低卖价
                 grid_order["maker_price"] = (
                     grid_order["maker_price"]
@@ -1004,12 +1045,18 @@ class Strategy(BaseStrategy):
                         \n执行买入操作: {json.dumps(grid_order, indent=2)}",
                     level="INFO",
                 )
-                # 交易执行成功，需要重置连续开仓信号
-                self.continuous_open_signal[grid_index] = 0
+                # 交易执行成功，需要调整连续开仓信号
+                self.continuous_open_signal[
+                    grid_index
+                ] -= self.continuous_open_signal_open_adjust_num
+                if self.continuous_open_signal[grid_index] < 0:
+                    self.continuous_open_signal[grid_index] = 0
             else:
                 self.continuous_open_signal[
                     grid_index
-                ] -= 5  # 如果不满足开仓条件，减少连续开仓信号计数
+                ] -= (
+                    self.continuous_open_signal_adjust_num
+                )  # 如果不满足开仓条件，减少连续开仓信号计数
                 if self.continuous_open_signal[grid_index] < 0:
                     self.continuous_open_signal[grid_index] = 0
                 continue
@@ -1090,7 +1137,7 @@ class Strategy(BaseStrategy):
                     "side": "Sell",
                     "amount": position["amount"],
                     "price": np.round(
-                        self.bbo[self.future]["bid_price"] * 0.99, 2
+                        self.bbo[self.future]["bid_price"] * 0.99, self.size_round_num
                     ),  # 市价平仓
                     "time_in_force": "GTC",  # 持续有效
                 }
@@ -1108,7 +1155,7 @@ class Strategy(BaseStrategy):
                     "side": "Buy",
                     "amount": position["amount"],
                     "price": np.round(
-                        self.bbo[self.future]["ask_price"] * 1.01, 2
+                        self.bbo[self.future]["ask_price"] * 1.01, self.size_round_num
                     ),  # 市价平仓
                     "time_in_force": "GTC",  # 持续有效
                 }
@@ -1277,10 +1324,12 @@ class Strategy(BaseStrategy):
         if price is None:
             place_price = (
                 np.round(
-                    (self.bbo[symbol]["bid_price"] * (1 - 0.002)), 2
+                    (self.bbo[symbol]["bid_price"] * (1 - 0.002)), self.size_round_num
                 )  # 这里使用限价加上0.2%的滑点忍受，2是因为ETH的交割与永续的最小报价单位是0.01
                 if side.lower() == "sell"
-                else np.round((self.bbo[symbol]["ask_price"] * (1 + 0.002)), 2)
+                else np.round(
+                    (self.bbo[symbol]["ask_price"] * (1 + 0.002)), self.size_round_num
+                )
             )
             expected_price = (
                 self.bbo[symbol]["bid_price"]
@@ -1290,10 +1339,10 @@ class Strategy(BaseStrategy):
         else:
             place_price = (
                 np.round(
-                    (price * (1 - 0.002)), 2
+                    (price * (1 - 0.002)), self.size_round_num
                 )  # 这里使用限价加上0.2%的滑点忍受，2是因为ETH的交割与永续的最小报价单位是0.01
                 if side.lower() == "sell"
-                else np.round(price * (1 + 0.002), 2)
+                else np.round(price * (1 + 0.002), self.size_round_num)
             )
             expected_price = price
 
