@@ -1,5 +1,23 @@
+# time_tolerance, 能容忍的交割与永续的最新的bbo的时间差异
+time_tolerance = 5
 
+# leverage, 杠杆
+leverage = 3
 
+# abnormal_threshold 异常阈值
+abnormal_threshold = 0.003 # 当最新的网格价大于短期均线千3时，认定为数据异常
+
+# reorder_threshold, 更换网格时要求再挂单时的阈值
+reorder_threshold = 0.5  # 网格重新挂单的阈值, 需要更新网格是base_price在网格中部50%以内
+
+# sync
+sync = false
+
+# min_price_precision 最小价格精度
+min_price_precision = 0.01
+
+# maker_price_offset, 挂在一档前多少个价格
+maker_price_offset = 0.1
 
 # 交易pairs, 这里现货方向与网格方向是一致的，远期方向与网格方向想法
 [pairs]
@@ -9,4 +27,15 @@ future = "ETH_USDT_250926"
 # 网格配置
 [grid_config]
 grid_interval = 0.0005  # 网格间隔
-grid_num = 4    # 单边网格的数量
+grid_num = 2    # 单边网格的数量
+
+# ewm配置
+[ewm_config]
+short_span = 1080000 # 3*60*60*100
+long_span = 12960000 # 36*60*60*100
+
+# continuous_open_signal配置
+[continuous_open_signal_config]
+continuous_open_signal_min_num = 30  # 连续开仓信号最小数量
+continuous_open_signal_adjust_num = 3  # 调整时-3
+continuous_open_signal_open_adjust_num = 10  # 开仓时-10
