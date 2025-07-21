@@ -1069,10 +1069,11 @@ class Strategy(BaseStrategy):
 
     def _market_close_all(self):
         """平掉所有仓位"""
-        # 由于有对冲机制，当交割合约成交时永续合约会自动对冲，所以这里只需要平掉现货仓位即可
-        symbol = self.spot
+        # 由于有对冲机制，当交割合约成交时永续合约会自动对冲，所以这里只需要平掉交割仓位即可
+        symbol = self.placeFutureSymbol  # 使用交割合约符号
         # 平掉所有仓位
-        position = self.positions.get(symbol, None)
+        position = self.positions.get(self.future, None)
+        cid = self.trader.create_cid(self.cex_configs[1]["exchange"])
         if position:
             # 执行平仓操作
             if position["amount"] == 0:
@@ -1083,28 +1084,38 @@ class Strategy(BaseStrategy):
                 return
             if position["side"].lower() == "long":
                 order = {
+                    "cid": cid,
                     "symbol": symbol,
-                    "order_type": "Market",
+                    "order_type": "Limit",
                     "side": "Sell",
                     "amount": position["amount"],
-                    "price": None,  # 市价平仓
+                    "price": np.round(
+                        self.bbo[self.future]["bid_price"] * 0.99, 2
+                    ),  # 市价平仓
+                    "time_in_force": "GTC",  # 持续有效
                 }
-                self.trader.place_order(0, order, sync=self.sync)
+                res = self.trader.place_order(1, order)
                 self.trader.log(
-                    f"市价平仓: {json.dumps(order, indent=2)}",
+                    f"市价平仓: {json.dumps(order, indent=2)}\
+                        \n平仓结果: {res}",
                     level="INFO",
                 )
             elif position["side"].lower() == "short":
                 order = {
+                    "cid": cid,
                     "symbol": symbol,
-                    "order_type": "Market",
+                    "order_type": "Limit",
                     "side": "Buy",
                     "amount": position["amount"],
-                    "price": None,  # 市价平仓
+                    "price": np.round(
+                        self.bbo[self.future]["ask_price"] * 1.01, 2
+                    ),  # 市价平仓
+                    "time_in_force": "GTC",  # 持续有效
                 }
-                self.trader.place_order(0, order, sync=self.sync)
+                res = self.trader.place_order(1, order)
                 self.trader.log(
-                    f"市价平仓: {json.dumps(order, indent=2)}",
+                    f"市价平仓: {json.dumps(order, indent=2)}\
+                        \n平仓结果: {res}",
                     level="INFO",
                 )
             # 清除持仓信息
