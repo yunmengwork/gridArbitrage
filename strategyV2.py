@@ -1038,6 +1038,7 @@ class Strategy(BaseStrategy):
                     continue
                 self.trader.log(
                     f"buy_price: {adjusted_buy_price}, sell_price: {adjusted_sell_price}\
+                        \nlatest_bbo: {json.dumps(bbo_copy, indent=2)}\
                         \n执行卖出操作: {json.dumps(grid_order, indent=2)}",
                     level="INFO",
                 )
@@ -1069,6 +1070,7 @@ class Strategy(BaseStrategy):
                     continue
                 self.trader.log(
                     f"buy_price: {adjusted_buy_price}, sell_price: {adjusted_sell_price}\
+                        \nlatest_bbo: {json.dumps(bbo_copy, indent=2)}\
                         \n执行买入操作: {json.dumps(grid_order, indent=2)}",
                     level="INFO",
                 )
