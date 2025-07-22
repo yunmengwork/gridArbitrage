@@ -839,7 +839,7 @@ class Strategy(BaseStrategy):
 
             if (
                 grid_order["side"] == "buy"
-                and grid_order["price"] >= adjusted_buy_price
+                and grid_order["price"] >= adjusted_buy_price - 0.0001
             ):
                 grid_order["maker_price"] = np.round(
                     adjusted_bbo[self.future]["ask_price"],
@@ -875,7 +875,7 @@ class Strategy(BaseStrategy):
                     )
             elif (
                 grid_order["side"] == "sell"
-                and grid_order["price"] <= adjusted_sell_price
+                and grid_order["price"] <= adjusted_sell_price + 0.0001
             ):
                 grid_order["maker_price"] = np.round(
                     adjusted_bbo[self.future]["bid_price"],
