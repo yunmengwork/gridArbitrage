@@ -572,6 +572,11 @@ class Strategy(BaseStrategy):
             output_file=f"./stats/{int(time.time()*1000)}_deal_price.csv"
         )  # 成交价格统计对象
 
+        # 持续挂单时间
+        self.continuous_order_time = (
+            {}
+        )  # {cid:{init_time: <init_time>, cancel_time: <cancel_time>}}
+
     def wait_lock_release(self, lock_name, msg=None, timeout=5):
         """等待锁释放"""
         start_time = time.time()
@@ -1197,6 +1202,28 @@ class Strategy(BaseStrategy):
         """
         # 先对symbol进行处理
         order["symbol"] = self.__process_symbol(order["symbol"])
+
+        # 统计挂单时间
+        if order["status"].lower() == "open":
+            if order["cid"] not in self.continuous_order_time:
+                self.continuous_order_time[order["cid"]] = {
+                    "init_time": order["timestamp"],
+                    "cancel_time": None,
+                }
+        elif order["status"].lower() == "canceled":
+            if order["cid"] in self.continuous_order_time:
+                self.continuous_order_time[order["cid"]]["cancel_time"] = order[
+                    "timestamp"
+                ]
+                init_time = self.continuous_order_time[order["cid"]]["init_time"]
+                cancel_time = self.continuous_order_time[order["cid"]]["cancel_time"]
+                latency = cancel_time - init_time
+                self.trader.log(
+                    f"订单 {order['cid']} 持续挂单时间: {latency} ms",
+                    level="INFO",
+                )
+                # 删除记录
+                del self.continuous_order_time[order["cid"]]
 
         # 统计延迟
         stats_cid = self.order_delay_stats._create_stats_cid(order)
